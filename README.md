@@ -9,6 +9,8 @@ The hardware manufacturer is here: https://www.dingtian-tech.com/en_us/index.htm
 
 This can serve as a complete replacement for a traditional wired security system.  You can have up to 8 contact sensors.  But, you can also pool some, so you might make all the windows in a room a single alert. 
 
+![RIBApp](https://user-images.githubusercontent.com/39914475/197240796-6e1ca5c8-efab-413c-903d-77e13c0825a0.jpg)
+
 I will eventually record a video of how to set everything up.  
 
 Until then, here is basically what you need to do.  
