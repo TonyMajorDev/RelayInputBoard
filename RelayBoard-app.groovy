@@ -27,7 +27,7 @@ preferences {
     section("Sensors and Switches") {
         input name: "ribAddress", type: "text", title: "Relay Interface Board Address", submitOnChange: true, required: true, defaultValue: "192.168.50.100" // local name resolution does not work on hubitat hub "homerelays.local" 
         input name: "pollFrequency", type: "number", title: "How often to check the sensors for a change (in seconds)", defaultValue: 1
-        input name: "debugOutput", type: "bool", title: "Enable debug logging", defaultValue: true
+        input name: "debugOutput", type: "bool", title: "Enable debug logging", defaultValue: false
     }
 }
 
@@ -64,7 +64,7 @@ def discoverBoards() {
 
 def initialize() {
 
-    discoverBoards()
+    //discoverBoards()
 
     // Example Response: &0&0&8&1&1&1&1&1&1&1&1&
 
