@@ -12,9 +12,9 @@ I will eventually record a video of how to set everything up.
 Until then, here is basically what you need to do.  
 
 1. Buy the board on ebay.  It can take a few weeks to months to arrive!  
-2. Plug in to your network and log in.  
-3. Go to the Input Link Relay page and Set "Input Control Relay" to No, and set "Relay Feedback Momentary Input" to No.
-4. I like to setup the board to use DHCP, so the router assigns an IP address.  I also like to set the "hostname" in the setting page, so I can browse to this admin console from the browser using http://hostname.local  Then reboot the board.  
+2. Connect the board to your network and log in to the admin console using your browser.  
+3. Go to the Input Link Relay page and Set "Input Control Relay" to No, and set "Relay Feedback Momentary Input" to No.  
+4. I like to setup the board to use DHCP, so the router assigns an IP address.  I also like to set the "hostname" in the setting page, so I can browse to this admin console from the browser using http://hostname.local  Then save and reboot the board.  
 5. Go to your router and manually assign the IP so that it NEVER changes.  Write down that IP. 
 6. Go to http://hubitat.local and expand the Developer Tools.  Click on Apps Code, New App button, Import button, paste this url: https://raw.githubusercontent.com/TonyMajorDev/RelayInputBoard/main/RelayBoard-app.groovy
 7. Click import button, Yes, overwrite, Click the Save button, Click "<< Apps code" to go back.  
