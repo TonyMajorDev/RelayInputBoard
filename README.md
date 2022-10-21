@@ -35,11 +35,13 @@ Until then, here is basically what you need to do.
 Also, for the Relays, this App does not yet handle that, but it will.  For now, I create a new device for each relay used with this Hubitat device driver:  https://github.com/hubitat/HubitatPublic/blob/master/examples/drivers/httpGetSwitch.groovy
 
 Here is an example of how I control a light: 
+
 On URI: "http://192.168.50.100/relay_cgi.cgi?type=0&relay=6&on=1&time=0&pwd=0&"
 Off URI: "http://192.168.50.100/relay_cgi.cgi?type=0&relay=6&on=0&time=0&pwd=0&"
 
 Here is an example of a Sprinkler station control*:
+
 On URI: "http://192.168.50.101/relay_cgi.cgi?type=2&relay=0&on=1&time=1800&pwd=0&"
 Off URI: "http://192.168.50.101/relay_cgi.cgi?type=0&relay=0&on=0&time=0&pwd=0&"
 
-* Notice that the On URI has an added time of 1800.  This makes sure that if the off command is not received, the sprinklers will never accidentally stay on! 
+* Notice that the On URI has an added time parameter of 1800 (or 30 minutes).  This makes sure that if the off command is not received, the sprinklers will never accidentally stay on! 
