@@ -32,3 +32,14 @@ Until then, here is basically what you need to do.
 15. Also, in the Device settings you can and should change the Device Name from "RIB Input 1" to "Front Door".  Also, if you end up not using all 8, you can just delete the unused RIB Input devices.  If you ever want them back, just go back to the RIB App, don't change anything, and click "Done" and the missing RIB Inputs will be restored.  
 16.  Now, you can go to your Amazon Alexa App and add these inputs and update.  Then Ask Alexa to discover new devices.  Then you can create routines to do speech announcements when the door is open.  Also, you can use the Notifications App in Hubitat to give you phone notifications whenever a door is opened.  Or turn lights on when you enter.  Or whatever...  
 
+Also, for the Relays, this App does not yet handle that, but it will.  For now, I create a new device for each relay used with this Hubitat device driver:  https://github.com/hubitat/HubitatPublic/blob/master/examples/drivers/httpGetSwitch.groovy
+
+Here is an example of how I control a light: 
+On URI: "http://192.168.50.100/relay_cgi.cgi?type=0&relay=6&on=1&time=0&pwd=0&"
+Off URI: "http://192.168.50.100/relay_cgi.cgi?type=0&relay=6&on=0&time=0&pwd=0&"
+
+Here is an example of a Sprinkler station control*:
+On URI: "http://192.168.50.101/relay_cgi.cgi?type=2&relay=0&on=1&time=1800&pwd=0&"
+Off URI: "http://192.168.50.101/relay_cgi.cgi?type=0&relay=0&on=0&time=0&pwd=0&"
+
+* Notice that the On URI has an added time of 1800.  This makes sure that if the off command is not received, the sprinklers will never accidentally stay on! 
