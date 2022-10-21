@@ -27,7 +27,7 @@ preferences {
     section("Sensors and Switches") {
         input name: "ribAddress", type: "text", title: "Relay Interface Board Address", submitOnChange: true, required: true, defaultValue: "192.168.50.100" // local name resolution does not work on hubitat hub "homerelays.local" 
         input name: "pollFrequency", type: "number", title: "How often to check the sensors for a change (in seconds)", defaultValue: 1
-        input name: "debugOutput", type: "bool", title: "Enable debug logging", defaultValue: false
+        input name: "debugOutput", type: "bool", title: "Enable debug logging", defaultValue: true
     }
 }
 
@@ -50,7 +50,21 @@ def uninstalled() {
     log.debug "uninstalled(): Uninstalling RIB SmartApp"
 }
 
+def discoverBoards() {
+    byte[] rawBytes = [0x05, 0xAA]
+    String stringBytes = hubitat.helper.HexUtils.byteArrayToHexString(rawBytes)
+    def myHubAction = new hubitat.device.HubAction(stringBytes, 
+                            hubitat.device.Protocol.LAN, 
+                            [type: hubitat.device.HubAction.Type.LAN_TYPE_UDPCLIENT, 
+                                destinationAddress: "224.0.2.11:6000",
+                                encoding: hubitat.device.HubAction.Encoding.HEX_STRING])
+    def response = sendHubCommand(myHubAction)
+    log.debug "response from sendHubCommand ${response}"
+}
+
 def initialize() {
+
+    discoverBoards()
 
     // Example Response: &0&0&8&1&1&1&1&1&1&1&1&
 
