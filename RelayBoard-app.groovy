@@ -37,8 +37,6 @@ def mainPage() {
     }
 }
 
-int working = 0
-
 def installed() {
     log.debug "installed(): Installing RIB Parent SmartApp"
     
@@ -56,6 +54,7 @@ def updated() {
 
 def uninstalled() {
     unschedule()
+    state.remove('working')
     log.debug "uninstalled(): Uninstalling RIB SmartApp"
 }
 
@@ -78,6 +77,8 @@ def initialize() {
     // Example Response: &0&0&8&1&1&1&1&1&1&1&1&
 
     unschedule()
+
+    state.working = 0
     
     int inputCount = 0
 
@@ -105,14 +106,14 @@ def initialize() {
 	    if(!contactDev) contactDev = addChildDevice("community", "RIB Contact Sensor", contactName, null, [name: "RIB Input " + Integer.toString(i), inputNumber: thisName])
     }
 
-    working = 0
+    state.working = 0
     
     //schedule("0/" + pollFrequency + " * * ? * *"   "*/6 * * * * *", poll) // once a second
     //runIn(pollFrequency, poll)
     
     //        def t = refreshInterval == 1 ? '*' : new Date().getSeconds() % refreshInterval
         //unschedule(poll)
-        schedule("*/${pollFrequency} * * * * ?", poll, [overwrite: false]) // once a second
+        schedule("*/${pollFrequency} * * ? * * *", poll, [overwrite: false])  // usually about once a second
         //state.refreshInterval = refreshInterval
         logDebug "Setting update frequency to every ${pollFrequency} second(s)"
     
@@ -121,20 +122,24 @@ def initialize() {
 
 
 def poll() {
-	
-    if (working > 0) {
-        working--
-    } else if (working < 0) {
-        working = 0
+
+
+
+    if (state.working > 0) {
+        state.working = state.working - 1
+    } else if (state.working < 0) {
+        state.working = 0
     } else {
-        working = 5        
-        
+        state.working = 5  // we wait 5 polling events for a response before allowing the scheduler to call the Get again...      
+
         def requestParams = [ uri: "http://" + settings.ribAddress + "/input.cgi" ]
     
         logDebug "poll(): $requestParams"
 	    
         asynchttpGet("pollHandler", requestParams)
     }
+
+
 }
 
 
@@ -142,9 +147,6 @@ def pollHandler(resp, data) {
 	if ((resp.getStatus() == 200 || resp.getStatus() == 207) && resp.data[0] == '&') {
 		doPoll(resp.data)
      
-        //if (pollFrequency > 0) {
-        //   runIn(pollFrequency, poll)
-        //}
     } else {
 		log.error "RIB did not return data: $resp"
         
@@ -153,15 +155,12 @@ def pollHandler(resp, data) {
         // take a break, then restart...   
         
         def startSeconds = new Date().getSeconds() + 10  // restart in 10 seconds
-        
-        schedule("${startSeconds}/${pollFrequency} * * * * ?", poll, [overwrite: true]) // once a second
-        
-       // if (pollFrequency > 0) {
-       //    runIn(pollFrequency*10, poll)  // 
-       // }
+
+
+        schedule("${startSeconds}/${pollFrequency} * * * * ?", poll, [overwrite: false]) // once a second
 	}
-    
-    working = 0
+        
+    state.working = 0
 }
 
 def doPoll(response) {
