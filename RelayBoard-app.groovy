@@ -130,7 +130,7 @@ def poll() {
     } else if (state.working < 0) {
         state.working = 0
     } else {
-        state.working = 5  // we wait 5 polling events for a response before allowing the scheduler to call the Get again...      
+        state.working = 5        
 
         def requestParams = [ uri: "http://" + settings.ribAddress + "/input.cgi" ]
     
@@ -155,11 +155,10 @@ def pollHandler(resp, data) {
         // take a break, then restart...   
         
         def startSeconds = new Date().getSeconds() + 10  // restart in 10 seconds
-
-
-        schedule("${startSeconds}/${pollFrequency} * * * * ?", poll, [overwrite: false]) // once a second
-	}
         
+        schedule("${startSeconds}/${pollFrequency} * * ? * * *", poll, [overwrite: false])  // usually about once a second
+	}
+    
     state.working = 0
 }
 
