@@ -1,7 +1,7 @@
 /**
  *  RIB App for Hubitat
  *
- *  Copyright 2022 ValkyrieTech LLC
+ *  Copyright 2023 ValkyrieTech LLC
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  *  in compliance with the License. You may obtain a copy of the License at:
@@ -37,6 +37,8 @@ def mainPage() {
     }
 }
 
+int working = 0
+
 def installed() {
     log.debug "installed(): Installing RIB Parent SmartApp"
     
@@ -47,12 +49,13 @@ def installed() {
 
 def updated() {
     log.debug "updated(): Updating RIB SmartApp"
-    unschedule(pollStatus)
+    //unschedule(pollStatus)
     initialize()
 
 }
 
 def uninstalled() {
+    unschedule()
     log.debug "uninstalled(): Uninstalling RIB SmartApp"
 }
 
@@ -74,6 +77,8 @@ def initialize() {
 
     // Example Response: &0&0&8&1&1&1&1&1&1&1&1&
 
+    unschedule()
+    
     int inputCount = 0
 
     try {
@@ -100,14 +105,36 @@ def initialize() {
 	    if(!contactDev) contactDev = addChildDevice("community", "RIB Contact Sensor", contactName, null, [name: "RIB Input " + Integer.toString(i), inputNumber: thisName])
     }
 
-    runIn(pollFrequency, poll)
+    working = 0
+    
+    //schedule("0/" + pollFrequency + " * * ? * *"   "*/6 * * * * *", poll) // once a second
+    //runIn(pollFrequency, poll)
+    
+    //        def t = refreshInterval == 1 ? '*' : new Date().getSeconds() % refreshInterval
+        //unschedule(poll)
+        schedule("*/${pollFrequency} * * * * ?", poll, [overwrite: false]) // once a second
+        //state.refreshInterval = refreshInterval
+        logDebug "Setting update frequency to every ${pollFrequency} second(s)"
+    
 }
 
+
+
 def poll() {
-	def requestParams = [ uri: "http://" + settings.ribAddress + "/input.cgi" ]
 	
-    logDebug "poll(): $requestParams"
-	asynchttpGet("pollHandler", requestParams)
+    if (working > 0) {
+        working--
+    } else if (working < 0) {
+        working = 0
+    } else {
+        working = 5        
+        
+        def requestParams = [ uri: "http://" + settings.ribAddress + "/input.cgi" ]
+    
+        logDebug "poll(): $requestParams"
+	    
+        asynchttpGet("pollHandler", requestParams)
+    }
 }
 
 
@@ -115,16 +142,26 @@ def pollHandler(resp, data) {
 	if ((resp.getStatus() == 200 || resp.getStatus() == 207) && resp.data[0] == '&') {
 		doPoll(resp.data)
      
-        if (pollFrequency > 0) {
-           runIn(pollFrequency, poll)
-        }
+        //if (pollFrequency > 0) {
+        //   runIn(pollFrequency, poll)
+        //}
     } else {
 		log.error "RIB did not return data: $resp"
         
-        if (pollFrequency > 0) {
-           runIn(pollFrequency*10, poll)  // 
-        }
+        //unschedule()
+        
+        // take a break, then restart...   
+        
+        def startSeconds = new Date().getSeconds() + 10  // restart in 10 seconds
+        
+        schedule("${startSeconds}/${pollFrequency} * * * * ?", poll, [overwrite: true]) // once a second
+        
+       // if (pollFrequency > 0) {
+       //    runIn(pollFrequency*10, poll)  // 
+       // }
 	}
+    
+    working = 0
 }
 
 def doPoll(response) {
