@@ -154,9 +154,9 @@ def pollHandler(resp, data) {
         
         // take a break, then restart...   
         
-        def startSeconds = new Date().getSeconds() + 10  // restart in 10 seconds
+        //def startSeconds = new Date().getSeconds() + 10  // restart in 10 seconds
         
-        schedule("${startSeconds}/${pollFrequency} * * ? * * *", poll, [overwrite: false])  // usually about once a second
+        //schedule("${startSeconds}/${pollFrequency} * * ? * * *", poll, [overwrite: false])  // usually about once a second
 	}
     
     state.working = 0
