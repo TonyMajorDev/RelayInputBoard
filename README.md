@@ -40,11 +40,13 @@ Also, for the Relays, this App does not yet handle that, but it will.  For now, 
 Here is an example of how I control a light: 
 
 On URI: "http://192.168.1.30/relay_cgi.cgi?type=0&relay=6&on=1&time=0&pwd=0&"
+
 Off URI: "http://192.168.1.30/relay_cgi.cgi?type=0&relay=6&on=0&time=0&pwd=0&"
 
 Here is an example of a Sprinkler station control*:
 
 On URI: "http://192.168.1.30/relay_cgi.cgi?type=2&relay=0&on=1&time=1800&pwd=0&"
+
 Off URI: "http://192.168.1.30/relay_cgi.cgi?type=0&relay=0&on=0&time=0&pwd=0&"
 
 * Notice that the On URI has an added time parameter of 1800 (or 30 minutes).  This makes sure that if the off command is not received, the sprinklers will never accidentally stay on! 
