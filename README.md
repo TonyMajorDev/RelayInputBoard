@@ -97,6 +97,12 @@ That means a relay-only board is a perfectly good use of this app. It won't push
 no inputs to push), it skips the input read on every sweep, and it just gives you switches with the
 board-side auto-off timer available on each one.
 
+The same applies to devices you don't want. **Delete or disable all the input devices and the app
+stops reading inputs entirely**; do the same to the relay devices and it stops reading relays. If
+you delete both, the sweep does nothing at all. This is how you tell a board with unused input
+terminals — a sprinkler board, say — to stop asking about them. Clicking Done recreates any deleted
+devices, so disable them instead if you want the setting to stick.
+
 ## When the board can't be reached
 
 Losing the board — unplugged, rebooted, network down — is handled without needing anything from you:

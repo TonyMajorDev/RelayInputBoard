@@ -899,17 +899,19 @@ private createRelayDevices(int relayCount) {
  * timer setting changes, so what is displayed always matches what would actually be sent.
  */
 def refreshRelayUrls() {
+    // Every relay device, including disabled ones -- this only refreshes what is displayed, so
+    // keeping a disabled device's URLs correct means they are already right if it is re-enabled.
     for (aDevice in getAllChildDevices()) {
         Integer n = relayNumberOf(aDevice)
         if (n == null) continue
 
-        int autoOff = 0
         try {
-            autoOff = (aDevice.autoOffSeconds() ?: 0) as int
-        } catch (Exception ignored) { }
-
-        String autoOffText = autoOff > 0 ? "off automatically after ${(autoOff / 60) as int} minute(s)" : "disabled"
-        aDevice.setUrls(relayUrl(n, true, autoOff), relayUrl(n, false, 0), autoOffText)
+            int autoOff = (aDevice.autoOffSeconds() ?: 0) as int
+            String autoOffText = autoOff > 0 ? "off automatically after ${(autoOff / 60) as int} minute(s)" : "disabled"
+            aDevice.setUrls(relayUrl(n, true, autoOff), relayUrl(n, false, 0), autoOffText)
+        } catch (Exception e) {
+            logDebug "refreshRelayUrls(): skipped ${aDevice} (${e.message})"
+        }
     }
 }
 
@@ -1004,9 +1006,9 @@ def refreshRelays() {
 def relayStatusHandler(resp, data) {
     try {
         // Reachability is normally reported by the input sweep running alongside this one, and
-        // reporting it here too would double every transition message. On a board with no inputs
-        // that sweep does not run, so this becomes the only thing that can notice.
-        boolean reportContact = ((state.inputCount ?: 0) < 1)
+        // reporting it here too would double every transition message. When there are no active
+        // inputs that sweep does not run, so this becomes the only thing that can notice.
+        boolean reportContact = !hasActiveInputs()
 
         if (resp.hasError()) {
             if (reportContact) noteBoardContact(false, resp.getErrorMessage())
@@ -1027,7 +1029,7 @@ def relayStatusHandler(resp, data) {
         }
         int count = toInt(keys[offset])
 
-        for (aDevice in getAllChildDevices()) {
+        for (aDevice in activeChildren("RIBRelay-")) {
             Integer n = relayNumberOf(aDevice)
             if (n == null || n < 1 || n > count) continue
 
@@ -1051,9 +1053,10 @@ def relayStatusHandler(resp, data) {
 // =================================================================================================
 
 def poll() {
-    // Skip the input read entirely on a board that reported none -- there is nothing to reconcile,
-    // and asking anyway would log a failure every sweep for a board that is working fine.
-    if ((state.inputCount ?: 0) > 0) {
+    // Only ask about what somebody is actually listening to. Reading inputs the user has deleted or
+    // disabled is pure waste -- nothing consumes the answer -- and on a board with no inputs at all
+    // it would log a failed request every sweep for a board working exactly as intended.
+    if (hasActiveInputs()) {
         def requestParams = [ uri: "http://" + settings.ribAddress + "/input.cgi", timeout: 10 ]
         logDebug "poll(): $requestParams"
         asynchttpGet("pollHandler", requestParams)
@@ -1064,8 +1067,30 @@ def poll() {
     // they get the same "eventually correct" guarantee the inputs have. This is also the only thing
     // that corrects a relay now that commands are confirmed from their own reply rather than by a
     // follow up read.
-    if ((state.relayCount ?: 0) > 0) refreshRelays()
+    if (hasActiveRelays()) refreshRelays()
 }
+
+/**
+ * The child devices of one kind that exist and are not disabled.
+ *
+ * Deleting the devices you don't use, or disabling one from its device page, is how you tell the app
+ * to stop caring about it -- so both are honoured here rather than only counting what the board
+ * reports it has. A device that is disabled cannot raise events anyway, so polling for it would be
+ * work with nowhere to go.
+ */
+private List activeChildren(String dniPrefix) {
+    return getAllChildDevices().findAll { aDevice ->
+        if (!aDevice.deviceNetworkId?.startsWith(dniPrefix)) return false
+        try {
+            return !aDevice.isDisabled()
+        } catch (Exception ignored) {
+            return true      // older platforms may not expose isDisabled(); assume it is in use
+        }
+    }
+}
+
+private boolean hasActiveInputs() { return !activeChildren("RIBContact-").isEmpty() }
+private boolean hasActiveRelays() { return !activeChildren("RIBRelay-").isEmpty() }
 
 def pollHandler(resp, data) {
     // Deliberately no retry and no rescheduling on failure.  An earlier version of this app tried
@@ -1157,11 +1182,11 @@ def doPoll(response) {
 
     int count = toInt(keys[offset])
 
-    for (aDevice in getAllChildDevices()) {
+    for (aDevice in activeChildren("RIBContact-")) {
         Integer inputNum = inputNumberOf(aDevice)
 
-        // Skip anything we can't place, and any input the board doesn't actually have -- e.g. a
-        // device left behind after moving to a board with fewer channels.
+        // Skip any input the board doesn't actually have -- e.g. a device left behind after moving
+        // to a board with fewer channels.
         if (inputNum == null || inputNum < 1 || inputNum > count) continue
 
         int valueIndex = offset + inputNum            // input 1 sits immediately after the count field
