@@ -114,11 +114,24 @@ previous state — the command demonstrably did not happen, so the device should
 
 ## If you run more than one board
 
-It's common to have a second Dingtian board doing something unrelated — sprinklers, low voltage
-lighting — with nothing wired to its inputs. **Point this app only at the board your contact sensors
-are actually wired to.** The app's settings page shows the model it found (e.g. `Dingtian DT-R008`)
-next to the firmware version, so you can confirm you're talking to the right one before clicking
-Done. A board used purely for outputs needs nothing from this app and should be left alone.
+Add the app once per board. Each instance is independent — its own devices, its own board address,
+its own schedule — so a sprinkler board and a door/lights board can happily run side by side.
+
+Give each one a **Name for this board** at the top of the settings page. That name appears in the
+Apps list, so instead of two identical `RIB App (Event)` entries you get:
+
+```
+RIB App (Sprinklers)
+RIB App (House)
+```
+
+The name is also used when creating devices, so a board named `Sprinklers` produces
+`Sprinklers Relay 1`, `Sprinklers Relay 2` and so on rather than eight more devices called
+`RIB Relay 1` that you can't tell apart. Devices are only named this way when they are **created** —
+renaming a board later never renames devices you have already labelled yourself.
+
+The app's settings page also shows the model it found (e.g. `Dingtian DT-R008`) next to the firmware
+version, so you can confirm you're pointed at the right board before clicking Done.
 
 Note that one board can happily do both — door sensors on its inputs and lights on its relays. The
 app only writes input-related settings, so the relay side of that board keeps working exactly as it

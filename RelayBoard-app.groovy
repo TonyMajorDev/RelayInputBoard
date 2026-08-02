@@ -90,8 +90,15 @@ mappings {
 }
 
 def mainPage() {
+    updateAppLabel()
     dynamicPage(name: "mainPage") {
         section("Relay Input Board Configuration") {
+            // Anyone running more than one board needs to tell the instances apart in the Apps list,
+            // where they would otherwise all read "RIB App (Event)".
+            input name: "boardName", type: "text", title: "Name for this board", submitOnChange: true,
+                description: "Shown in the Apps list, e.g. \"Sprinklers\" gives you RIB App (Sprinklers). " +
+                             "Also used to name any new devices this app creates.",
+                required: false
             // This must be the board your INPUTS are wired to. If you run more than one Dingtian
             // board, check the model shown under "Board Firmware" below to confirm you have the
             // right one before clicking Done.
@@ -108,7 +115,7 @@ def mainPage() {
 
         section("Relay Outputs") {
             if (state.relayCount) {
-                paragraph "<b>${state.relayCount} RIB Relay switches are available in your devices list.</b>"
+                paragraph "<b>${state.relayCount} ${devicePrefix()} Relay switches are available in your devices list.</b>"
             }
 
             input name: "relayPassword", type: "number", title: "Relay password (0 if you have not set one)",
@@ -276,6 +283,8 @@ def uninstalled() {
  */
 def initialize() {
 
+    updateAppLabel()
+
     unschedule()
 
     // Leftovers from earlier versions of this app: the old polling mutex, and state from a network
@@ -405,7 +414,7 @@ private createChildDevices(int inputCount) {
         String dni = contactDni(i)
         logDebug "initialize(): adding driver = ${dni}"
         if (!getChildDevice(dni)) {
-            addChildDevice("community", "RIB Contact Sensor", dni, null, [name: "RIB Input ${i}"])
+            addChildDevice("community", "RIB Contact Sensor", dni, null, [name: "${devicePrefix()} Input ${i}"])
         }
     }
 }
@@ -413,6 +422,28 @@ private createChildDevices(int inputCount) {
 /** Single source of truth for the child DNI format, used by both the push path and the sweep. */
 private String contactDni(idx) {
     return "RIBContact-${idx}_${app.id}"
+}
+
+/**
+ * Put the board's name in the Apps list, so several instances can be told apart at a glance.
+ *
+ * Safe to call on every page render: it only writes when the label would actually change.
+ */
+private updateAppLabel() {
+    String name = settings.boardName?.trim()
+    String desired = name ? "RIB App (${name})" : "RIB App (Event)"
+    if (app.label != desired) app.updateLabel(desired)
+}
+
+/**
+ * What to call newly created devices.  Falls back to "RIB" so that an install without a board name
+ * keeps producing the same "RIB Input 1" names it always has.
+ *
+ * Only ever applied to devices at the moment they are created -- renaming existing ones would undo
+ * the names people have given them, which is the whole point of being able to rename a device.
+ */
+private String devicePrefix() {
+    return settings.boardName?.trim() ?: "RIB"
 }
 
 /**
@@ -812,7 +843,7 @@ private createRelayDevices(int relayCount) {
         String dni = relayDni(i)
         if (!getChildDevice(dni)) {
             logDebug "createRelayDevices(): adding ${dni}"
-            addChildDevice("community", "RIB Relay Switch", dni, null, [name: "RIB Relay ${i}"])
+            addChildDevice("community", "RIB Relay Switch", dni, null, [name: "${devicePrefix()} Relay ${i}"])
         }
     }
     refreshRelayUrls()
