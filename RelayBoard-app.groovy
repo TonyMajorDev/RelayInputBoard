@@ -430,11 +430,13 @@ def uninstalled() {
     // that no longer exists, forever.  Best effort only -- if the board is unreachable right now
     // there is nothing useful we can do about it, so never let this block the uninstall.
     try {
-        Map cfg = fetchBoardConfig()
-        if (cfg?.input_link_url != null) {
-            cfg.input_link_url.en = 0
-            writeBoardConfig(cfg)
-            log.debug "uninstalled(): disabled Input Link URL on the board"
+        String raw = fetchBoardConfigRawAt(settings.ribAddress)
+        List bounds = inputLinkUrlBounds(raw)
+        if (bounds) {
+            String block = raw.substring(bounds[0], bounds[1]).replaceFirst(/"en"\s*:\s*\d+/, '"en":0')
+            if (writeBoardConfig(raw.substring(0, bounds[0]) + block + raw.substring(bounds[1]))) {
+                log.debug "uninstalled(): disabled Input Link URL on the board"
+            }
         }
     } catch (Exception e) {
         log.warn "uninstalled(): could not disable Input Link URL: ${e.message}"
@@ -474,7 +476,17 @@ def initialize() {
         }
     }
 
-    Map cfg = fetchBoardConfig()
+    // Fetched once as text and once parsed: the parsed copy is for reading counts and versions, the
+    // raw text is what actually gets edited and written back.
+    String raw = fetchBoardConfigRawAt(settings.ribAddress)
+    Map cfg = null
+    if (raw) {
+        try {
+            cfg = (Map) new JsonSlurper().parseText(raw)
+        } catch (Exception e) {
+            log.warn "initialize(): could not parse the board's config: ${e.message}"
+        }
+    }
 
     int inputCount = 0
     if (cfg) {
@@ -509,8 +521,8 @@ def initialize() {
 
     if ((state.relayCount ?: 0) > 0) createRelayDevices(state.relayCount as int)
 
-    if (cfg && state.accessToken) {
-        provisionBoard(cfg, inputCount)
+    if (raw && cfg && state.accessToken) {
+        provisionBoard(raw, inputCount)
     } else if (!cfg) {
         // The board answered input.cgi but not the config API, so it predates /api/v2/config.cgi.
         // Degrade gracefully: inputs still track, just on the sweep rather than on push.
@@ -622,44 +634,114 @@ private Map fetchBoardConfig() {
  * timeout matters because most addresses tried will not be relay boards at all.
  */
 private Map fetchBoardConfigAt(String address, int timeoutSeconds = 15) {
-    Map cfg = null
+    String raw = fetchBoardConfigRawAt(address, timeoutSeconds)
+    if (!raw) return null
     try {
-        httpGet([uri: "http://${address}", path: "/api/v2/config.cgi", contentType: "text/plain", timeout: timeoutSeconds]) { resp ->
+        return (Map) new JsonSlurper().parseText(raw)
+    } catch (Exception e) {
+        log.warn "fetchBoardConfig(): could not parse the board's config: ${e.message}"
+        return null
+    }
+}
+
+/**
+ * The board's configuration as the exact text it sent.
+ *
+ * Kept as raw text on purpose. The SDK is explicit that the node order must not change, and the
+ * board has been shown to accept a byte-for-byte copy of its own config -- so the safest thing we
+ * can do when writing is to edit that text in place rather than rebuild the whole document from a
+ * parsed map and hope every key, order and number format survives the round trip.
+ */
+private String fetchBoardConfigRawAt(String address, int timeoutSeconds = 15) {
+    String raw = null
+    try {
+        // textParser keeps Hubitat from parsing the JSON for us. We specifically want the bytes the
+        // board sent, because those are what it is guaranteed to accept back.
+        httpGet([uri: "http://${address}", path: "/api/v2/config.cgi",
+                 contentType: "text/plain", textParser: true, timeout: timeoutSeconds]) { resp ->
             if (resp.success) {
                 def d = resp.data
-                if (d instanceof Map) {
-                    // Hubitat parsed it for us based on the board's content type.  Still order
-                    // preserving, since Hubitat parses with JsonSlurper and that is LinkedHashMap backed.
-                    cfg = (Map) d
+                if (d instanceof String) {
+                    raw = d
+                } else if (d instanceof Map || d instanceof List) {
+                    // Hubitat parsed it anyway. Re-serialising loses the byte-for-byte guarantee,
+                    // so say so -- if a write ever fails, this is the first thing to suspect.
+                    log.warn "fetchBoardConfig(): the platform parsed the config instead of returning text; " +
+                             "falling back to re-serialising it"
+                    raw = JsonOutput.toJson(d)
                 } else {
-                    String raw = (d instanceof String) ? d : d.getText()
-                    cfg = (Map) new JsonSlurper().parseText(raw)
+                    raw = d?.getText()
                 }
             }
         }
     } catch (Exception e) {
         log.warn "fetchBoardConfig(): ${e.message}"
     }
-    return cfg
+    return raw
 }
 
 /**
- * Write the whole configuration back to the board.
+ * Locate the "input_link_url":{...} object inside the raw config text.
  *
- * Two constraints from the vendor SDK, and both are easy to violate by accident:
- *
- *   "only support compressed json, must remove all formatting characters(\r\n\t\space\...),
- *    notice:the node order can't change"
- *
- * JsonOutput.toJson emits no whitespace, which satisfies the first.  The second is why this app
- * always mutates the Map it got back from fetchBoardConfig() in place and hands the same object
- * here.  Never rebuild this map from scratch, never sort its keys, and never pretty print it.
- *
- * Because this writes everything, it is also what preserves the settings we care about not
- * breaking -- relay tasks, relay password, power failure recovery -- untouched.
+ * Returns [startOfKey, indexAfterClosingBrace], or null if it isn't there. That block holds only
+ * scalars and flat arrays -- no nested objects -- so the first closing brace really is its end and
+ * no brace counting is needed.
  */
-private boolean writeBoardConfig(Map cfg) {
-    String body = JsonOutput.toJson(cfg)
+private List inputLinkUrlBounds(String raw) {
+    if (!raw) return null
+    int key = raw.indexOf('"input_link_url"')
+    if (key < 0) return null
+    int open = raw.indexOf('{', key)
+    if (open < 0) return null
+    int close = raw.indexOf('}', open)
+    if (close < 0) return null
+    return [key, close + 1]
+}
+
+/**
+ * Build the replacement "input_link_url" block as text, in the key order the board itself uses.
+ *
+ * Written by hand rather than serialised from a map so the key order, number formatting and array
+ * lengths are all under our control and cannot be quietly rearranged by a JSON library. The SDK is
+ * explicit that node order must not change.
+ */
+private String buildInputLinkUrlBlock(int n, String hubHost, int hubPort, String basePath) {
+    Closure quote = { v -> '"' + v.toString().replace('\\', '\\\\').replace('"', '\\"') + '"' }
+    Closure array = { List values -> '[' + values.join(',') + ']' }
+    List inputs = (1..n)
+
+    return '"input_link_url":{' +
+        '"en":1,' +
+        '"cnt":' + n + ',' +
+        // 0 = SelfLock: follow the input level rather than pulsing on one edge only.
+        '"type":'         + array(inputs.collect { 0 }) + ',' +
+        // 1 = HIGH, so the ON url means the same thing as a "1" from input.cgi.
+        '"active_level":' + array(inputs.collect { 1 }) + ',' +
+        '"tls":'          + array(inputs.collect { 0 }) + ',' +
+        '"auth":'         + array(inputs.collect { 0 }) + ',' +
+        '"server":'       + array(inputs.collect { quote(hubHost) }) + ',' +
+        '"port":'         + array(inputs.collect { hubPort }) + ',' +
+        '"user":'         + array(inputs.collect { '""' }) + ',' +
+        '"pass":'         + array(inputs.collect { '""' }) + ',' +
+        '"on_method":'    + array(inputs.collect { 0 }) + ',' +      // 0 = GET
+        '"on_path":'      + array(inputs.collect { i -> quote(pushPath(basePath, i, 1)) }) + ',' +
+        '"on_body":'      + array(inputs.collect { '""' }) + ',' +
+        '"off_method":'   + array(inputs.collect { 0 }) + ',' +
+        '"off_path":'     + array(inputs.collect { i -> quote(pushPath(basePath, i, 0)) }) + ',' +
+        '"off_body":'     + array(inputs.collect { '""' }) +
+        '}'
+}
+
+/**
+ * POST a complete configuration document to the board.
+ *
+ * Takes text, not a map. The board is documented as needing compressed JSON with unchanged node
+ * order, and it has been shown to accept a byte-for-byte copy of its own config -- so callers hand
+ * over the board's own text with one block spliced out and replaced, and everything else survives
+ * untouched. That is also what keeps relay tasks, the relay password and power failure recovery
+ * exactly as they were.
+ */
+private boolean writeBoardConfig(String body) {
     boolean ok = false
 
     // The board is known to accept a byte-for-byte copy of its own config, so if a write fails the
@@ -719,9 +801,10 @@ private boolean writeBoardConfig(Map cfg) {
  * The board stores this feature as parallel arrays -- one entry per input in each of ~15 arrays --
  * which is why this reads as a block of collect{} calls rather than a loop over input objects.
  */
-private provisionBoard(Map cfg, int inputCount) {
+private provisionBoard(String raw, int inputCount) {
 
-    if (cfg.input_link_url == null) {
+    List bounds = inputLinkUrlBounds(raw)
+    if (!bounds) {
         state.provisionError = "This board's firmware has no Input Link URL support (needs V3.1.2776 or later). Reported version: ${state.boardVersion}"
         log.error "provisionBoard(): ${state.provisionError}"
         return
@@ -729,7 +812,7 @@ private provisionBoard(Map cfg, int inputCount) {
 
     // Keep one pristine copy of what the board looked like before we ever touched it, so a bad
     // write is recoverable without resorting to the physical factory reset button.
-    if (!state.configBackup) state.configBackup = JsonOutput.toJson(cfg)
+    if (!state.configBackup) state.configBackup = raw
 
     Map hub = hubEndpointParts()
     if (!hub) {
@@ -737,52 +820,32 @@ private provisionBoard(Map cfg, int inputCount) {
         log.error "provisionBoard(): ${state.provisionError}"
         return
     }
-    String hubHost = hub.host
-    int hubPort = hub.port
-    String basePath = hub.basePath
 
     int n = inputCount
 
-    def ilu = cfg.input_link_url
-    ilu.en           = 1
-    ilu.cnt          = n
-    // SelfLock (0), not Momentary (1).  Momentary fires a pulse on one edge only, which would let
-    // the contact state drift out of sync; SelfLock follows the level and gives us both edges.
-    ilu.type         = (1..n).collect { 0 }
-    // Treat HIGH as the "on" edge so that the ON URL means the same thing as a "1" in the
-    // input.cgi response, keeping push and sweep consistent.  If open/closed come out backwards
-    // for a given sensor, that is what the driver's Normally Open / Normally Closed setting fixes.
-    ilu.active_level = (1..n).collect { 1 }
-    ilu.tls          = (1..n).collect { 0 }             // plain HTTP on the LAN; HTTPS to the hub buys nothing here
-    ilu.auth         = (1..n).collect { 0 }             // no Basic/Digest -- our token rides in the path instead
-    ilu.server       = (1..n).collect { hubHost }
-    ilu.port         = (1..n).collect { hubPort }
-    ilu.user         = (1..n).collect { "" }
-    ilu.pass         = (1..n).collect { "" }
-    ilu.on_method    = (1..n).collect { 0 }             // 0 = GET
-    ilu.on_path      = (1..n).collect { i -> pushPath(basePath, i, 1) }
-    ilu.on_body      = (1..n).collect { "" }
-    ilu.off_method   = (1..n).collect { 0 }
-    ilu.off_path     = (1..n).collect { i -> pushPath(basePath, i, 0) }
-    ilu.off_body     = (1..n).collect { "" }
+    // Splice our block in place of the board's, leaving every other byte of its config exactly as
+    // it sent it. Rebuilding the whole document from a parsed map is what broke this before.
+    String body = raw.substring(0, bounds[0]) +
+                  buildInputLinkUrlBlock(n, hub.host, hub.port, hub.basePath) +
+                  raw.substring(bounds[1])
 
-    // Opt in only.  Event push works whether or not the board also drives its own relays from its
-    // inputs, and on a board that runs lights as well as sensors that linkage may well be wired
-    // deliberately -- so switching it off without being asked could silently break a light switch.
+    // Opt in, and a targeted edit rather than a rewrite. This governs only inputs driving relays;
+    // relay control via relay_cgi.cgi, the type=2 timed auto-off used for sprinklers, relay_task
+    // and everything under relay_connect are untouched.
     //
-    // Scope note either way: this governs only inputs driving relays. Relay control via
-    // relay_cgi.cgi, the type=2 timed auto-off used for sprinklers, relay_task and everything under
-    // relay_connect are untouched and round trip verbatim.
-    if (settings.disableInputRelayLink && cfg.input_link_relay != null) {
-        if (cfg.input_link_relay.input_link_relay != 0 || cfg.input_link_relay.relay_feedback_momentary_input != 0) {
+    // Both patterns match a key followed by a number, so neither can match the "input_link_relay"
+    // section header, which is followed by an opening brace.
+    if (settings.disableInputRelayLink != false) {
+        String before = body
+        body = body.replaceFirst(/"input_link_relay"\s*:\s*\d+/, '"input_link_relay":0')
+                   .replaceFirst(/"relay_feedback_momentary_input"\s*:\s*\d+/, '"relay_feedback_momentary_input":0')
+        if (before != body && state.inputLinkRelayActive) {
             log.warn "provisionBoard(): turning off 'Input Control Relay' and 'Relay Feedback Momentary Input' " +
-                     "as requested, so inputs no longer switch relays on the board itself"
+                     "so inputs no longer switch relays on the board itself"
         }
-        cfg.input_link_relay.input_link_relay = 0
-        cfg.input_link_relay.relay_feedback_momentary_input = 0
     }
 
-    if (writeBoardConfig(cfg)) {
+    if (writeBoardConfig(body)) {
         state.lastProvisioned = new Date().format("yyyy-MM-dd HH:mm:ss", location.timeZone)
         logDebug "provisionBoard(): wrote Input Link URL config for ${n} inputs"
         runIn(5, "verifyProvisioning")     // give the board a moment to commit before reading back
@@ -814,14 +877,12 @@ private Map hubEndpointParts() {
 }
 
 /**
- * Read the config back and confirm the board stored our URLs verbatim.
+ * Read the config back and confirm the board really stored what we sent.
  *
- * Why bother: the vendor SDK documents maximum lengths for the MQTT fields but says nothing at all
- * about on_path, and our URL is around 70 characters because the access token alone is a 36
- * character UUID.  If some firmware silently truncates it, everything appears to succeed -- the
- * write returns OK -- while the board pushes to a URL that 404s forever and the user just sees
- * inputs that only update every five minutes.  Failing loudly here turns a baffling symptom into a
- * clear message.
+ * Worth doing because the board answers HTTP 200 to a write it did not apply. Without this check
+ * the app would report success while the board pushed nowhere, and the only visible symptom would
+ * be inputs that quietly update every few minutes instead of instantly -- which looks like a
+ * network problem rather than a failed write.
  */
 def verifyProvisioning() {
     Map cfg = fetchBoardConfig()
