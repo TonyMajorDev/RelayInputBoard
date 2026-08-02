@@ -28,27 +28,44 @@ I will eventually record a video of how to set everything up.
 
 1. Buy the board on ebay.  It can take a few weeks to months to arrive!  
 2. Connect the board to your network and log in to the admin console using your browser.  
-3. You no longer need to touch the "Input Link URL" page — the app fills that in itself. It also sets "Input Control Relay" to No for you, which is almost always what you want: boards ship with input 1 wired to relay 1, input 2 to relay 2 and so on, so a door closing will click the matching relay and fight any other use you have for the relays. There is a toggle to leave that alone, and exactly one good reason to use it — see below.  
+3. There is nothing to configure on the board by hand. The app fills in the "Input Link URL" page itself, and sets "Input Control Relay" to No for you — see [Should inputs be allowed to switch relays on the board?](#should-inputs-be-allowed-to-switch-relays-on-the-board) for what that means and the one case where you'd want to leave it alone.  
 4. I like to setup the board to use DHCP, so the router assigns an IP address.  I also like to set the "hostname" in the setting page, so I can browse to this admin console from the browser using http://hostname.local  Then save and reboot the board.  
 5. Go to your router and manually assign the IP so that it NEVER changes.  Write down that IP. 
 6. Go to http://hubitat.local and expand the Developer Tools.  Click on Apps Code, New App button, Import button, paste this url: https://raw.githubusercontent.com/TonyMajorDev/RelayInputBoard/event-driven/RelayBoard-app.groovy
 7. Click import button, Yes, overwrite, Click the Save button.
 8. **Enable OAuth.** Still in the app code editor, click the "OAuth" button at the top right, click "Enable OAuth in App", then Update. This is what lets the board send events to the hub. It is a one-time step, and the app will tell you on its settings page if you forget. (The board itself does not do OAuth — enabling this simply makes Hubitat mint a token that gets included in the URL the board calls.) Then click "<< Apps code" to go back.
-9. Now we do the same for the driver.  Click on "Drivers code", Click New Driver button, Import button, paste this url: https://raw.githubusercontent.com/TonyMajorDev/RelayInputBoard/event-driven/RelayBoard-contact-sensor-driver.groovy
-10. Click the Import button, Yes, overwrite, Click the Save button, Click "<< Drivers code"
+9. Now the drivers — there are two. Click on "Drivers code", Click New Driver button, Import button, paste this url: https://raw.githubusercontent.com/TonyMajorDev/RelayInputBoard/event-driven/RelayBoard-contact-sensor-driver.groovy — then Import, Yes overwrite, Save. Now click New Driver again and do the same with the relay switch driver: https://raw.githubusercontent.com/TonyMajorDev/RelayInputBoard/event-driven/RelayBoard-relay-switch-driver.groovy
+10. Click "<< Drivers code" to go back. (If you only want the door sensors and not the relay switches, you can skip the second driver and turn off "Create a switch device for each relay" in the app.)
 11. Now let's setup.  At this point, you should have your sensors wired into the input terminals on the Relay/Input board (RIB).  Now, above the develtoper tools, Click on "Apps" (Not "Apps code").  On the top right, click "Add User App".  Find and select "RIB App (Event)"
 12. Now, we are about done.  Remember that IP Address you wrote down from step #5?  Type that into the "Relay Interface Board Address".  It is probably starts with "192.168."  There is also a "Search the network for relay boards" link that will try to find boards for you and let you pick one from a list — but Hubitat is fussy about letting apps see that kind of network traffic, so if it comes up empty just type the address in. Typing it in always works.  
 13. Click "Done" button! 
-14. Now if everything worked, it communicated with the RIB, asked for the number of inputs, created new RIB Input devices, **and told the board to push future changes straight to the hub**.  Go check your Devices and see if you now have RIB Inputs.  You can select an input you have connected and see if the state changes from contact: open to closed — it should now react instantly rather than up to a second later.  The Input number in the device name matches the input numbers printed next to the screw terminals on the board.  So, "I3 printed" on the board is "RIB Input 3".  
-15. If Open and Closed are reversed, you can choose to reverse that in the Device settings.  
-16. Also, in the Device settings you can and should change the Device Name from "RIB Input 1" to "Front Door".  Also, if you end up not using all 8, you can just delete the unused RIB Input devices.  If you ever want them back, just go back to the RIB App, don't change anything, and click "Done" and the missing RIB Inputs will be restored.  
-17.  Now, you can go to your Amazon Alexa App and add these inputs and update.  Then Ask Alexa to discover new devices.  Then you can create routines to do speech announcements when the door is open.  Also, you can use the Notifications App in Hubitat to give you phone notifications whenever a door is opened.  Or turn lights on when you enter.  Or whatever...  
+14. Now if everything worked, it communicated with the RIB, asked how many inputs and relays it has, created a **RIB Input** device per input and a **RIB Relay** device per relay, **and told the board to push future changes straight to the hub**.  Go check your Devices.  You can select an input you have connected and see if the state changes from contact: open to closed — it should now react instantly rather than up to a second later.  The numbers in the device names match the numbers printed next to the screw terminals on the board.  So, "I3" printed on the board is "RIB Input 3", and "R3" is "RIB Relay 3".  
+15. Check the app's settings page for a red error message before you trust any of it. That is where OAuth problems, old firmware and failed board writes are reported.  
+16. If Open and Closed are reversed, you can choose to reverse that in the Device settings.  
+17. Also, in the Device settings you can and should change the Device Name from "RIB Input 1" to "Front Door".  Also, if you end up not using all 8, you can just delete the unused RIB Input and RIB Relay devices.  If you ever want them back, just go back to the RIB App, don't change anything, and click "Done" and the missing devices will be restored.  
+18.  Now, you can go to your Amazon Alexa App and add these inputs and update.  Then Ask Alexa to discover new devices.  Then you can create routines to do speech announcements when the door is open.  Also, you can use the Notifications App in Hubitat to give you phone notifications whenever a door is opened.  Or turn lights on when you enter.  Or whatever...  
 
 **If your hub's IP address ever changes**, open the app and click Done again — that re-writes the push URLs on the board with the new address.
 
 ## Firmware
 
-"Input Link URL" is what makes the push work, and it arrived in firmware **V3.1.2776 (Aug 2023)**. **V3.1.6611** is recommended, because later releases fixed real bugs in this exact feature (POST/PUT bodies not saving in V3.1.6312, a crash with HTTPS enabled in V3.1.5182), and because V3.1.6553 immediately before it is known to crash.
+"Input Link URL" is what makes the push work, and it arrived in firmware **V3.1.2776 (Aug 2023)**.
+That is the only hard requirement. If your board is newer than that, you very likely do not need to
+upgrade anything.
+
+Later releases did fix bugs in this same feature, but none of them affect how this app uses it:
+
+| Fix | Version | Relevant here? |
+|---|---|---|
+| Crash when HTTPS is enabled | V3.1.5182 | No — the app talks plain HTTP to the hub |
+| POST/PUT `body` not saving | V3.1.6312 | No — the app uses GET with no body |
+| 10 KB body, input link queue | V3.1.6553 / 6611 | No — nothing here needs a body |
+
+So upgrade only if you want fixes for something else. If you do, **V3.1.6611** is the one to land on
+— V3.1.6553 immediately before it is known to crash. Two fixes worth knowing about if you use the
+relays: V3.1.2178 and V3.1.5312 both address "Power Failure Recovery Relay" being set to Yes causing
+the board to lose its config, and V3.1.5128 fixes board-side `relay_task` schedules firing an hour
+late around daylight saving.
 
 The app shows you your board's current version on its settings page, along with links to the downloads, and warns you in red if the board is too old to push events. You can also check it yourself with:
 
@@ -58,16 +75,23 @@ curl -s http://<BOARD_IP>/api/v2/config.cgi
 
 Look for `"sw_ver"`. Downloads are at [Dingtian support → Download](https://www.dingtian-tech.com/en_us/support.html?tab=download), or directly: <http://www.dingtian-tech.com/sdk/relay_upgrade_tool.zip>. The upgrade path depends on where you are starting from:
 
-- Already on **v3.1.4897 or later** → flash `ESP32_8ch_v3_1_6611.dtf2` directly
-- Older than **v3.1.4897** → flash `ESP32_8ch_v3_1_4897.dtf` **first**, then the `.dtf2`
+- Already on **v3.1.4897 or later** → flash `ESP32_<n>ch_v3_1_6611.dtf2` directly
+- Older than **v3.1.4897** → flash `ESP32_<n>ch_v3_1_4897.dtf` **first**, then the `.dtf2`
+
+Match `<n>` to your board's channel count — an 8-relay board takes the `8ch` files, a 4-relay board
+the `4ch` files. The model is printed on the board and shown on the app's settings page.
 
 Use `ota_tool_v4_1_1.exe` from Dingtian's upgrade tool. Turn off your PC firewall while doing it, use a wired connection, and make sure power is stable.
 
 ## Troubleshooting
 
-- **Inputs only update every few minutes.** The push isn't arriving, and you're seeing the reconcile sweep. Check the app's settings page for a red error message. The most likely causes are OAuth not being enabled (step 8) or firmware older than V3.1.2776.
-- **The app reports the board didn't store the push URL intact.** The URL the hub needs is about 70 characters and some firmware may truncate it. This is worth reporting — note your `sw_ver` and the length the app says it got back.
+- **Inputs only update every few minutes.** The push isn't arriving, so you're seeing the reconcile sweep doing its job. Check the app's settings page for a red error message. The most likely causes are OAuth not being enabled (step 8) or firmware older than V3.1.2776.
+- **"The board did not accept the push configuration".** The board kept its own settings and ignored the write. Turn on debug logging and click Done — the log will show `writeBoardConfig(): sending N bytes` and the board's own reply. A reply of `{"status":0}` means the board accepted it, anything else means it refused.
+- **"The board shortened the push URL".** A genuine field-length limit in that firmware. Worth reporting, with your `sw_ver` and the length it stored.
+- **A relay clicks whenever a door opens or closes.** The board is linking inputs to relays. Turn on "Stop inputs from switching relays on the board itself" and click Done.
+- **A relay device shows the wrong state.** The app sets devices from what the board actually reports, so this usually means the command didn't reach the board. Check the log for `Relay N did not switch` and verify the relay password in the app matches the board's.
 - **Nothing works after a board factory reset.** Open the app and click Done to re-provision it.
+- **Discovery finds nothing.** Expected on some hubs — Hubitat is restrictive about handing this kind of network traffic to an app. Type the address in instead; it always works.
 
 ## If you run more than one board
 
@@ -140,18 +164,37 @@ shows the truth. If it still hasn't changed after 5 seconds, an error is logged 
 Relay states are also refreshed on the same reconcile sweep as the inputs, which is what catches an
 auto-off timer expiring or someone switching a relay from the board's own web page.
 
-Here is an example of how I control a light (same board as the door sensors, `.30`): 
+### The URLs, for reference
 
-On URI: "http://192.168.50.30/relay_cgi.cgi?type=0&relay=6&on=1&time=0&pwd=0&"
+You don't need these any more — the app builds them — but this is what it sends, and it's still
+useful for a board this app doesn't manage, or from Rule Machine.
 
-Off URI: "http://192.168.50.30/relay_cgi.cgi?type=0&relay=6&on=0&time=0&pwd=0&"
+A plain light on relay 7:
 
-Here is an example of a Sprinkler station control* (a second, outputs-only board at `.101`):
+```
+On:  http://192.168.50.30/relay_cgi.cgi?type=0&relay=6&on=1&time=0&pwd=0&
+Off: http://192.168.50.30/relay_cgi.cgi?type=0&relay=6&on=0&time=0&pwd=0&
+```
 
-On URI: "http://192.168.50.101/relay_cgi.cgi?type=2&relay=0&on=1&time=1800&pwd=0&"
+A sprinkler station on relay 1 of a separate board, with a 30 minute auto-off:
 
-Off URI: "http://192.168.50.101/relay_cgi.cgi?type=0&relay=0&on=0&time=0&pwd=0&"
+```
+On:  http://192.168.50.101/relay_cgi.cgi?type=2&relay=0&on=1&time=1800&pwd=0&
+Off: http://192.168.50.101/relay_cgi.cgi?type=0&relay=0&on=0&time=0&pwd=0&
+```
 
-* Notice that the On URI has an added time parameter of 1800 (or 30 minutes).  This makes sure that if the off command is not received, the sprinklers will never accidentally stay on! 
+Two things to notice. `relay=` is **zero based**, so `relay=6` is the relay marked R7 on the board.
+And the ON url for the sprinkler uses `type=2` with `time=1800` — which is the same board-side timer
+the app's auto-off checkbox turns on, and the reason the sprinklers can never accidentally stay on.
 
-This is worth spelling out, because it is the single most important safety property of the whole setup: `type=2` with a `time=` value runs the timer **on the relay board itself**, not on the hub. Once the board has accepted that command, the relay will shut off after 1800 seconds even if the hub reboots, the app crashes, the network drops, or the "off" command never arrives. Any future relay support added to this app must preserve that — a Hubitat-side `runIn()` timer would be strictly worse, because it fails in exactly the situations you most need it to work.
+## A note on where timers should live
+
+The board-side auto-off is the single most important safety property of this whole setup, and it is
+worth being explicit about why. `type=2` with a `time=` value runs the countdown **on the relay
+board**, not on the hub. Once the board has accepted that command the relay will shut off on time
+even if the hub reboots, this app crashes, the network drops, or the OFF command never arrives.
+
+A Hubitat-side `runIn()` timer would be strictly worse, because it fails in precisely the situations
+you most need it to work. The same reasoning is why a physical switch wired straight to a relay is
+sometimes the right answer for a light: the fewer things that must be alive for a circuit to behave
+safely, the better.
