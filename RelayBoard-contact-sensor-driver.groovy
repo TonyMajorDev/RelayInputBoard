@@ -1,7 +1,7 @@
 /**
  *  RIB Contact Sensor
  *
- *  Copyright 2022 ValkyrieTech LLC
+ *  Copyright 2026 ValkyrieTech LLC
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  *  in compliance with the License. You may obtain a copy of the License at:
