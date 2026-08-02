@@ -106,23 +106,26 @@ def mainPage() {
             input name: "reconcileMinutes", type: "enum", title: "How often to re-sync all inputs as a safety net",
                 options: ["1": "Every minute", "5": "Every 5 minutes", "10": "Every 10 minutes", "15": "Every 15 minutes", "30": "Every 30 minutes"],
                 defaultValue: "5", required: true
-            // Off by default, deliberately.  The board can drive its own relays directly from its
-            // inputs, and on a board that also runs lights that may be wired on purpose -- e.g. a
-            // physical switch on an input operating a light relay without the hub involved.
-            // Turning it off would break that, so leave the board's existing setup alone unless the
-            // user explicitly asks.  It is not required for event push either way.
+            // On by default. Boards ship with every input wired to the matching relay, which is
+            // almost never what someone monitoring door sensors wants -- a door closing then clicks
+            // a relay for no apparent reason, and it fights any independent use of the relays.
+            //
+            // The one case for turning this off is a physical switch wired to an input driving a
+            // relay directly, so that light keeps working while the hub is down. That is a genuine
+            // failsafe and worth preserving, which is why this stays a choice rather than something
+            // the app just does. It has no bearing on event push either way.
             input name: "disableInputRelayLink", type: "bool",
                 title: "Stop inputs from switching relays on the board itself",
-                description: "Leave this off unless you want Hubitat to be the only thing that acts on an input. " +
-                             "It does not affect event push.",
-                defaultValue: false
+                description: "Recommended. Boards are shipped with input 1 wired to relay 1, input 2 to relay 2, " +
+                             "and so on, which will fight any other use of the relays. Only turn this off if you " +
+                             "have a physical switch on an input that you want to keep working even when the hub is down.",
+                defaultValue: true
 
-            if (state.inputLinkRelayActive && settings.disableInputRelayLink != true) {
-                paragraph "<b>Heads up:</b> this board is currently set to let its inputs switch its own relays " +
-                          "directly &mdash; by default input 1 drives relay 1, input 2 drives relay 2, and so on. " +
-                          "If you use the relays for anything of your own, that linkage will fight you, and a door " +
-                          "opening or closing can click a relay for no apparent reason. Tick the box above to turn " +
-                          "it off. Leave it alone only if you deliberately wired a switch to an input to drive a relay."
+            if (state.inputLinkRelayActive && settings.disableInputRelayLink == false) {
+                paragraph "<b>Heads up:</b> this board currently lets its inputs switch its own relays directly " +
+                          "&mdash; by default input 1 drives relay 1, input 2 drives relay 2, and so on. With door " +
+                          "sensors on the inputs, opening or closing a door will click the matching relay. Leave " +
+                          "this turned off only if that is deliberate."
             }
             input name: "debugOutput", type: "bool", title: "Enable debug logging", defaultValue: false
         }
@@ -620,27 +623,56 @@ private Map fetchBoardConfigAt(String address, int timeoutSeconds = 15) {
 private boolean writeBoardConfig(Map cfg) {
     String body = JsonOutput.toJson(cfg)
     boolean ok = false
-    try {
-        httpPost([uri: "http://${settings.ribAddress}", path: "/api/v2/config_set.cgi",
-                  requestContentType: "application/json", body: body, timeout: 20]) { resp ->
-            // A 200 is not proof of anything here. The board answers 200 and then reports the real
-            // outcome in the body as {"status":N}, so treat a non-zero status as a failure rather
-            // than reporting success and letting the read-back blame something unrelated.
-            String answer = (resp.data instanceof String) ? resp.data : "${resp.data}"
-            state.lastWriteResponse = answer
-            log.debug "writeBoardConfig(): board replied ${answer}"
 
-            ok = resp.success
-            java.util.regex.Matcher m = (answer =~ /"status"\s*:\s*(-?\d+)/)
-            if (m.find() && m.group(1) != "0") {
-                ok = false
-                log.error "writeBoardConfig(): the board rejected the configuration (status ${m.group(1)})"
+    // The board is known to accept a byte-for-byte copy of its own config, so if a write fails the
+    // question is what we did to the JSON on the way through. Logging the size makes a truncated or
+    // half-serialised body obvious at a glance -- a healthy 8 channel config is a few KB.
+    log.debug "writeBoardConfig(): sending ${body.length()} bytes, starts: ${body.take(80)}"
+
+    // Two ways of putting a pre-serialised JSON string on the wire.
+    //
+    // The header form is tried first and is the one that should work: setting Content-Type as a
+    // plain header leaves the String body alone. Using requestContentType instead sends the body
+    // through HTTPBuilder's JSON encoder, which can encode an already-encoded string a second time
+    // -- the board then receives a quoted JSON *string* rather than an object, refuses it, and
+    // keeps its previous configuration while still answering HTTP 200.
+    //
+    // The second form is kept as a fallback because platform behaviour here has changed over
+    // Hubitat releases, and a config write is worth one retry before giving up.
+    List attempts = [
+        [label: "raw body",  params: [headers: ["Content-Type": "application/json"]]],
+        [label: "encoded body", params: [requestContentType: "application/json"]]
+    ]
+
+    for (attempt in attempts) {
+        Map params = [uri: "http://${settings.ribAddress}", path: "/api/v2/config_set.cgi",
+                      contentType: "text/plain", body: body, timeout: 20] + attempt.params
+        try {
+            httpPost(params) { resp ->
+                // A 200 proves nothing here. The board answers 200 and reports the real outcome in
+                // the body as {"status":N}, so a non-zero status is a failure no matter what the
+                // HTTP layer says.
+                String answer = (resp.data instanceof String) ? resp.data : "${resp.data}"
+                state.lastWriteResponse = answer
+                log.debug "writeBoardConfig(): ${attempt.label} -> board replied ${answer}"
+
+                ok = resp.success
+                java.util.regex.Matcher m = (answer =~ /"status"\s*:\s*(-?\d+)/)
+                if (m.find() && m.group(1) != "0") {
+                    ok = false
+                    log.warn "writeBoardConfig(): board rejected the config with status ${m.group(1)} (${attempt.label})"
+                }
             }
+        } catch (Exception e) {
+            ok = false
+            log.warn "writeBoardConfig(): ${attempt.label} failed: ${e.message}"
         }
-    } catch (Exception e) {
-        log.error "writeBoardConfig(): ${e.message}"
+
+        if (ok) return true
     }
-    return ok
+
+    log.error "writeBoardConfig(): could not write the configuration to ${settings.ribAddress}"
+    return false
 }
 
 /**

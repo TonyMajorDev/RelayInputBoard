@@ -28,7 +28,7 @@ I will eventually record a video of how to set everything up.
 
 1. Buy the board on ebay.  It can take a few weeks to months to arrive!  
 2. Connect the board to your network and log in to the admin console using your browser.  
-3. You no longer need to touch the "Input Link URL" page — the app fills that in itself. The app also leaves the "Input Link Relay" page alone by default, so if you have an input wired to switch a relay directly on the board that keeps working. If you'd rather Hubitat be the only thing that reacts to an input, there's a toggle in the app for it.  
+3. You no longer need to touch the "Input Link URL" page — the app fills that in itself. It also sets "Input Control Relay" to No for you, which is almost always what you want: boards ship with input 1 wired to relay 1, input 2 to relay 2 and so on, so a door closing will click the matching relay and fight any other use you have for the relays. There is a toggle to leave that alone, and exactly one good reason to use it — see below.  
 4. I like to setup the board to use DHCP, so the router assigns an IP address.  I also like to set the "hostname" in the setting page, so I can browse to this admin console from the browser using http://hostname.local  Then save and reboot the board.  
 5. Go to your router and manually assign the IP so that it NEVER changes.  Write down that IP. 
 6. Go to http://hubitat.local and expand the Developer Tools.  Click on Apps Code, New App button, Import button, paste this url: https://raw.githubusercontent.com/TonyMajorDev/RelayInputBoard/event-driven/RelayBoard-app.groovy
@@ -79,7 +79,20 @@ Done. A board used purely for outputs needs nothing from this app and should be 
 
 Note that one board can happily do both — door sensors on its inputs and lights on its relays. The
 app only writes input-related settings, so the relay side of that board keeps working exactly as it
-did. It also won't disable inputs that switch relays locally unless you ask it to.
+did.
+
+### Should inputs be allowed to switch relays on the board?
+
+Almost always no, and the app turns it off by default. Boards ship with input 1 wired to relay 1,
+input 2 to relay 2, and so on. With door sensors on the inputs that means every door event clicks a
+relay, which is baffling to debug and makes the relays unusable for anything else.
+
+The one case where you *should* leave it on is a **physical switch wired to an input, driving a
+relay directly**. That light then keeps working while the hub is rebooting, updating, or dead —
+the same reasoning behind using the board's own timer for sprinklers rather than a Hubitat timer.
+A wall switch that stops working when a computer is down is a bad wall switch.
+
+So: leave the toggle on unless you deliberately wired a switch to an input.
 
 ## Controlling Relays from Hubitat
 
