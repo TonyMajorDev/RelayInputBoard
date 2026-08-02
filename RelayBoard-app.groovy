@@ -116,6 +116,14 @@ def mainPage() {
                 description: "Leave this off unless you want Hubitat to be the only thing that acts on an input. " +
                              "It does not affect event push.",
                 defaultValue: false
+
+            if (state.inputLinkRelayActive && settings.disableInputRelayLink != true) {
+                paragraph "<b>Heads up:</b> this board is currently set to let its inputs switch its own relays " +
+                          "directly &mdash; by default input 1 drives relay 1, input 2 drives relay 2, and so on. " +
+                          "If you use the relays for anything of your own, that linkage will fight you, and a door " +
+                          "opening or closing can click a relay for no apparent reason. Tick the box above to turn " +
+                          "it off. Leave it alone only if you deliberately wired a switch to an input to drive a relay."
+            }
             input name: "debugOutput", type: "bool", title: "Enable debug logging", defaultValue: false
         }
 
@@ -441,6 +449,10 @@ def initialize() {
         state.firmwareTooOld = !firmwareSupportsPush(state.boardVersion)
         inputCount = (cfg?.input_link_relay?.input_cnt ?: cfg?.input_link_url?.cnt ?: 0) as int
         state.relayCount = (cfg?.input_link_relay?.relay_cnt ?: cfg?.relay_task?.relay_cnt ?: 0) as int
+        // Boards ship with every input wired to the matching relay (I1->R1 ...). That is invisible
+        // unless you go looking at the board's web page, and it fights with using the relays for
+        // anything else -- so surface it instead of letting people hunt for a mystery relay click.
+        state.inputLinkRelayActive = (cfg?.input_link_relay?.input_link_relay?.toString() == "1")
 
         if (state.firmwareTooOld) {
             log.warn "initialize(): board firmware ${state.boardVersion} is older than ${MIN_FIRMWARE_TEXT}; " +
