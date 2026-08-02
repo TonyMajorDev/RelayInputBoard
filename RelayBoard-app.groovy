@@ -116,16 +116,30 @@ def mainPage() {
             // the app just does. It has no bearing on event push either way.
             input name: "disableInputRelayLink", type: "bool",
                 title: "Stop inputs from switching relays on the board itself",
-                description: "Recommended. Boards are shipped with input 1 wired to relay 1, input 2 to relay 2, " +
-                             "and so on, which will fight any other use of the relays. Only turn this off if you " +
-                             "have a physical switch on an input that you want to keep working even when the hub is down.",
+                description: "Leave this on. Most people never need to change it.",
                 defaultValue: true
 
+            paragraph "<small><b>What this does.</b> On the board's \"Input Link Relay\" page it sets " +
+                      "<i>Input Control Relay</i> and <i>Relay Feedback Momentary Input</i> to <b>No</b>. Boards " +
+                      "leave the factory with input 1 wired to relay 1, input 2 to relay 2, and so on, so the board " +
+                      "switches its own relays whenever an input changes. With door sensors on the inputs that means " +
+                      "every door event clicks a relay &mdash; confusing to track down, and it makes those relays " +
+                      "unusable for anything else. Turning it off leaves Hubitat as the only thing that reacts to " +
+                      "an input.</small>"
+
+            paragraph "<small><b>It does not affect anything else.</b> Event push, controlling relays from Hubitat, " +
+                      "relay tasks scheduled on the board, and the auto-off timer all work exactly the same either " +
+                      "way.</small>"
+
+            paragraph "<small><b>When to turn it off.</b> Only if you have a physical switch wired to an input that " +
+                      "you want to keep operating its relay directly &mdash; so that light still works while the hub " +
+                      "is rebooting, updating, or down. That is a genuinely good reason. If your inputs are door and " +
+                      "window sensors, it does not apply to you.</small>"
+
             if (state.inputLinkRelayActive && settings.disableInputRelayLink == false) {
-                paragraph "<b>Heads up:</b> this board currently lets its inputs switch its own relays directly " +
-                          "&mdash; by default input 1 drives relay 1, input 2 drives relay 2, and so on. With door " +
-                          "sensors on the inputs, opening or closing a door will click the matching relay. Leave " +
-                          "this turned off only if that is deliberate."
+                paragraph "<b>Heads up:</b> this board is currently letting its inputs switch its own relays, and " +
+                          "the setting above is turned off, so the app will leave it that way. If you did not set " +
+                          "that up deliberately, turn the setting on."
             }
             input name: "debugOutput", type: "bool", title: "Enable debug logging", defaultValue: false
         }
