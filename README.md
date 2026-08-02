@@ -28,7 +28,7 @@ I will eventually record a video of how to set everything up.
 
 1. Buy the board on ebay.  It can take a few weeks to months to arrive!  
 2. Connect the board to your network and log in to the admin console using your browser.  
-3. You no longer need to set anything on the Input Link Relay page by hand — the app sets "Input Control Relay" and "Relay Feedback Momentary Input" to No for you, and logs a warning when it changes them. You also never need to touch the "Input Link URL" page; the app fills that in itself.  
+3. You no longer need to touch the "Input Link URL" page — the app fills that in itself. The app also leaves the "Input Link Relay" page alone by default, so if you have an input wired to switch a relay directly on the board that keeps working. If you'd rather Hubitat be the only thing that reacts to an input, there's a toggle in the app for it.  
 4. I like to setup the board to use DHCP, so the router assigns an IP address.  I also like to set the "hostname" in the setting page, so I can browse to this admin console from the browser using http://hostname.local  Then save and reboot the board.  
 5. Go to your router and manually assign the IP so that it NEVER changes.  Write down that IP. 
 6. Go to http://hubitat.local and expand the Developer Tools.  Click on Apps Code, New App button, Import button, paste this url: https://raw.githubusercontent.com/TonyMajorDev/RelayInputBoard/event-driven/RelayBoard-app.groovy
@@ -77,19 +77,23 @@ are actually wired to.** The app's settings page shows the model it found (e.g. 
 next to the firmware version, so you can confirm you're talking to the right one before clicking
 Done. A board used purely for outputs needs nothing from this app and should be left alone.
 
+Note that one board can happily do both — door sensors on its inputs and lights on its relays. The
+app only writes input-related settings, so the relay side of that board keeps working exactly as it
+did. It also won't disable inputs that switch relays locally unless you ask it to.
+
 ## Controlling Relays from Hubitat
 
 Also, for the Relays, this App does not yet handle that, but it will.  For now, I create a new device for each relay used with this Hubitat device driver:  https://github.com/hubitat/HubitatPublic/blob/master/examples/drivers/httpGetSwitch.groovy
 
 **Nothing in the event-driven change touches the relays.** The app never sends a relay command, and when it writes its push settings to the board it reads the board's whole configuration, changes only the input-related sections, and writes the rest back byte for byte. Your relay passwords, relay tasks, power-failure recovery setting and the timed auto-off behaviour below all survive untouched.
 
-Here is an example of how I control a light: 
+Here is an example of how I control a light (same board as the door sensors, `.30`): 
 
-On URI: "http://192.168.50.101/relay_cgi.cgi?type=0&relay=6&on=1&time=0&pwd=0&"
+On URI: "http://192.168.50.30/relay_cgi.cgi?type=0&relay=6&on=1&time=0&pwd=0&"
 
-Off URI: "http://192.168.50.101/relay_cgi.cgi?type=0&relay=6&on=0&time=0&pwd=0&"
+Off URI: "http://192.168.50.30/relay_cgi.cgi?type=0&relay=6&on=0&time=0&pwd=0&"
 
-Here is an example of a Sprinkler station control*:
+Here is an example of a Sprinkler station control* (a second, outputs-only board at `.101`):
 
 On URI: "http://192.168.50.101/relay_cgi.cgi?type=2&relay=0&on=1&time=1800&pwd=0&"
 

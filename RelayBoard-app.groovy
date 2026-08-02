@@ -96,7 +96,7 @@ def mainPage() {
             // This must be the board your INPUTS are wired to. If you run more than one Dingtian
             // board, check the model shown under "Board Firmware" below to confirm you have the
             // right one before clicking Done.
-            input name: "ribAddress", type: "text", title: "Relay Interface Board Address", submitOnChange: true, required: true, defaultValue: "192.168.50.100" // local name resolution does not work on hubitat hub "homerelays.local"
+            input name: "ribAddress", type: "text", title: "Relay Interface Board Address", submitOnChange: true, required: true, defaultValue: "192.168.50.30" // local name resolution does not work on hubitat hub "homerelays.local"
             href name: "toDiscovery", page: "discoveryPage", title: "Search the network for relay boards",
                  description: "Optional. You can always just type the IP address above."
             // This is the safety net sweep, not the primary update path -- inputs normally update
@@ -106,6 +106,16 @@ def mainPage() {
             input name: "reconcileMinutes", type: "enum", title: "How often to re-sync all inputs as a safety net",
                 options: ["1": "Every minute", "5": "Every 5 minutes", "10": "Every 10 minutes", "15": "Every 15 minutes", "30": "Every 30 minutes"],
                 defaultValue: "5", required: true
+            // Off by default, deliberately.  The board can drive its own relays directly from its
+            // inputs, and on a board that also runs lights that may be wired on purpose -- e.g. a
+            // physical switch on an input operating a light relay without the hub involved.
+            // Turning it off would break that, so leave the board's existing setup alone unless the
+            // user explicitly asks.  It is not required for event push either way.
+            input name: "disableInputRelayLink", type: "bool",
+                title: "Stop inputs from switching relays on the board itself",
+                description: "Leave this off unless you want Hubitat to be the only thing that acts on an input. " +
+                             "It does not affect event push.",
+                defaultValue: false
             input name: "debugOutput", type: "bool", title: "Enable debug logging", defaultValue: false
         }
         // Setup can fail in a few quiet ways (OAuth off, firmware too old, board unreachable).
@@ -634,15 +644,17 @@ private provisionBoard(Map cfg, int inputCount) {
     ilu.off_path     = (1..n).collect { i -> pushPath(basePath, i, 0) }
     ilu.off_body     = (1..n).collect { "" }
 
-    // Inputs should report to us rather than switch relays locally on the board (this is what the
-    // README used to ask you to set by hand).  Scope note: this only governs inputs driving relays.
-    // Relay control via relay_cgi.cgi, the type=2 timed auto-off used for sprinklers, relay_task
-    // and everything under relay_connect are untouched and round trip verbatim.  It is still the
-    // one setting here capable of changing existing relay behaviour, so say so when it changes.
-    if (cfg.input_link_relay != null) {
+    // Opt in only.  Event push works whether or not the board also drives its own relays from its
+    // inputs, and on a board that runs lights as well as sensors that linkage may well be wired
+    // deliberately -- so switching it off without being asked could silently break a light switch.
+    //
+    // Scope note either way: this governs only inputs driving relays. Relay control via
+    // relay_cgi.cgi, the type=2 timed auto-off used for sprinklers, relay_task and everything under
+    // relay_connect are untouched and round trip verbatim.
+    if (settings.disableInputRelayLink && cfg.input_link_relay != null) {
         if (cfg.input_link_relay.input_link_relay != 0 || cfg.input_link_relay.relay_feedback_momentary_input != 0) {
             log.warn "provisionBoard(): turning off 'Input Control Relay' and 'Relay Feedback Momentary Input' " +
-                     "so inputs report to Hubitat instead of switching relays on the board"
+                     "as requested, so inputs no longer switch relays on the board itself"
         }
         cfg.input_link_relay.input_link_relay = 0
         cfg.input_link_relay.relay_feedback_momentary_input = 0
