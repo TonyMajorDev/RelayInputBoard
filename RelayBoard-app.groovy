@@ -138,6 +138,17 @@ def mainPage() {
                 paragraph "<b style='color:red'>Setup has not finished.</b> The board has not answered yet, so no " +
                           "devices have been created. The app is still retrying."
             }
+            // Inputs and relays are set up independently, so one side failing is worth stating
+            // plainly rather than leaving the user to notice devices that never appeared.
+            if (state.inputsUnavailable) {
+                paragraph "<b>This board reported no inputs</b>, so no contact sensors were created. Its relays " +
+                          "are set up and working normally. If you expected inputs here, check the board's " +
+                          "\"Input Status\" page &mdash; a board with no input terminals will never report any."
+            }
+            if (state.relaysUnavailable && state.inputCount) {
+                paragraph "<b>This board reported no relays</b>, so no switches were created. Its inputs are set " +
+                          "up and working normally."
+            }
             if (state.oauthError) {
                 paragraph "<b style='color:red'>OAuth is not enabled for this app.</b> Go to Developer Tools &rarr; Apps Code &rarr; " +
                           "RIB App (Event), click OAuth, Enable OAuth in App, Update. Then re-open this app and click Done."
@@ -379,19 +390,34 @@ private boolean setupFromBoard() {
 
     state.relayCount = relayCount
 
-    // Nothing answered at all -- neither the config API nor the legacy input.cgi. Do not create or
-    // touch anything on a guess; report failure so the caller can retry later.
-    if (inputCount < 1) return false
+    // Only give up if the board told us nothing at all. Inputs and relays are independent: a board
+    // used purely for outputs, or one whose inputs cannot be read, should still get working relay
+    // switches rather than nothing.
+    if (inputCount < 1 && relayCount < 1) return false
 
     state.inputCount = inputCount
 
-    createChildDevices(inputCount)
+    state.inputsUnavailable = (inputCount < 1)
+    state.relaysUnavailable = (relayCount < 1)
 
-    if (relayCount > 0) createRelayDevices(relayCount)
+    if (inputCount > 0) {
+        createChildDevices(inputCount)
+    } else {
+        log.warn "The board at ${settings.ribAddress} did not report any inputs, so no contact sensors were " +
+                 "created. Its ${relayCount} relay(s) are set up and working normally."
+    }
 
-    if (raw && cfg && state.accessToken) {
+    if (relayCount > 0) {
+        createRelayDevices(relayCount)
+    } else {
+        log.warn "The board at ${settings.ribAddress} did not report any relays, so no switches were created. " +
+                 "Its ${inputCount} input(s) are set up and working normally."
+    }
+
+    // Push is only about inputs, so there is nothing to provision on a board with none.
+    if (inputCount > 0 && raw && cfg && state.accessToken) {
         provisionBoard(raw, inputCount)
-    } else if (!cfg) {
+    } else if (inputCount > 0 && !cfg) {
         // The board answered input.cgi but not the config API, so it predates /api/v2/config.cgi.
         // Degrade gracefully: inputs still track, just on the sweep rather than on push.
         state.provisionError = "This board is too old for event push &mdash; that needs firmware ${MIN_FIRMWARE_TEXT} " +
@@ -977,9 +1003,20 @@ def refreshRelays() {
 
 def relayStatusHandler(resp, data) {
     try {
-        // Reachability is reported by the input sweep, which runs alongside this one -- reporting it
-        // here too would just double every transition message.
-        if (resp.hasError() || resp.status != 200) return
+        // Reachability is normally reported by the input sweep running alongside this one, and
+        // reporting it here too would double every transition message. On a board with no inputs
+        // that sweep does not run, so this becomes the only thing that can notice.
+        boolean reportContact = ((state.inputCount ?: 0) < 1)
+
+        if (resp.hasError()) {
+            if (reportContact) noteBoardContact(false, resp.getErrorMessage())
+            return
+        }
+        if (resp.status != 200) {
+            if (reportContact) noteBoardContact(false, "HTTP ${resp.status}")
+            return
+        }
+        if (reportContact) noteBoardContact(true, null)
 
         // Same shape as input.cgi -- e.g. "&0&4&1&0&1&0&" -- so the same offset safe parsing works.
         List keys = (resp.data as String).tokenize('&')
@@ -1014,9 +1051,13 @@ def relayStatusHandler(resp, data) {
 // =================================================================================================
 
 def poll() {
-    def requestParams = [ uri: "http://" + settings.ribAddress + "/input.cgi", timeout: 10 ]
-    logDebug "poll(): $requestParams"
-    asynchttpGet("pollHandler", requestParams)
+    // Skip the input read entirely on a board that reported none -- there is nothing to reconcile,
+    // and asking anyway would log a failure every sweep for a board that is working fine.
+    if ((state.inputCount ?: 0) > 0) {
+        def requestParams = [ uri: "http://" + settings.ribAddress + "/input.cgi", timeout: 10 ]
+        logDebug "poll(): $requestParams"
+        asynchttpGet("pollHandler", requestParams)
+    }
 
     // Relays are swept on the same schedule. Their state can change without anyone telling us -- an
     // auto-off timer expiring, someone using the board's own web page, a lost command reply -- so

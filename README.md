@@ -87,6 +87,16 @@ the `4ch` files. The model is printed on the board and shown on the app's settin
 
 Use `ota_tool_v4_1_1.exe` from Dingtian's upgrade tool. Turn off your PC firewall while doing it, use a wired connection, and make sure power is stable.
 
+## Boards with only inputs, or only relays
+
+Inputs and relays are set up independently. A board that reports no inputs still gets working relay
+switches, and a board that reports no relays still gets working contact sensors — the app only gives
+up if the board tells it nothing at all, and it says on its settings page which side was missing.
+
+That means a relay-only board is a perfectly good use of this app. It won't push events (there are
+no inputs to push), it skips the input read on every sweep, and it just gives you switches with the
+board-side auto-off timer available on each one.
+
 ## When the board can't be reached
 
 Losing the board — unplugged, rebooted, network down — is handled without needing anything from you:
