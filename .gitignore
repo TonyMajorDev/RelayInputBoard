@@ -1,0 +1,8 @@
+﻿################################################################################
+# This .gitignore file was automatically created by Microsoft(R) Visual Studio.
+################################################################################
+
+/.vs/RelayInputBoard.slnx/FileContentIndex/7aeb88d8-ffb5-4749-b614-ae882d1ecd97.vsidx
+*.vsidx
+/.vs/slnx.sqlite
+/.vs/RelayInputBoard.slnx/v18
