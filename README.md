@@ -83,6 +83,26 @@ the `4ch` files. The model is printed on the board and shown on the app's settin
 
 Use `ota_tool_v4_1_1.exe` from Dingtian's upgrade tool. Turn off your PC firewall while doing it, use a wired connection, and make sure power is stable.
 
+## When the board can't be reached
+
+Losing the board — unplugged, rebooted, network down — is handled without needing anything from you:
+
+- **Nothing is invented.** Contact and switch devices keep their last known state. The app never
+  fabricates a value, because guessing that every door is closed would be worse than showing state
+  that is merely stale. The app's settings page says in red that the board is not responding, and
+  when it was last heard from.
+- **It is logged once, not forever.** You get one warning when it goes away and one message when it
+  comes back, rather than the same error every few minutes for as long as it's off.
+- **It recovers by itself.** The app keeps retrying and picks up again when the board returns. If it
+  came back after a reboot or factory reset with its push settings wiped, the app notices and
+  rewrites them, so events resume without anyone clicking Done.
+- **Setup can be done out of order.** If the board is unreachable the first time you click Done, the
+  app still schedules itself and keeps trying, then creates the devices and provisions the board as
+  soon as it answers.
+
+A relay command sent while the board is unreachable is logged and the device is left showing its
+previous state — the command demonstrably did not happen, so the device should not claim it did.
+
 ## Troubleshooting
 
 - **Inputs only update every few minutes.** The push isn't arriving, so you're seeing the reconcile sweep doing its job. Check the app's settings page for a red error message. The most likely causes are OAuth not being enabled (step 8) or firmware older than V3.1.2776.

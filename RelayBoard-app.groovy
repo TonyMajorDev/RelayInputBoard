@@ -122,6 +122,15 @@ def mainPage() {
         // Setup can fail in a few quiet ways (OAuth off, firmware too old, board unreachable).
         // Surface them here rather than leaving the user to find them in the logs.
         section("Status") {
+            if (state.boardOnline == false) {
+                paragraph "<b style='color:red'>The board at ${settings.ribAddress} is not responding.</b> " +
+                          "Inputs and relays are showing their last known state, which may be out of date. " +
+                          (state.lastContact ? "Last successful contact: ${state.lastContact}. " : "") +
+                          "The app keeps retrying and will pick up again by itself once the board is back."
+            } else if (state.setupPending) {
+                paragraph "<b style='color:red'>Setup has not finished.</b> The board has not answered yet, so no " +
+                          "devices have been created. The app is still retrying."
+            }
             if (state.oauthError) {
                 paragraph "<b style='color:red'>OAuth is not enabled for this app.</b> Go to Developer Tools &rarr; Apps Code &rarr; " +
                           "RIB App (Event), click OAuth, Enable OAuth in App, Update. Then re-open this app and click Done."
@@ -288,6 +297,28 @@ def initialize() {
         }
     }
 
+    // Schedule the sweep before anything that can fail. Everything below depends on the board being
+    // reachable right now, and if it isn't, the app must still be left with a heartbeat -- otherwise
+    // the unschedule() above would leave it permanently dead until someone clicked Done again.
+    scheduleReconcile()
+
+    if (setupFromBoard()) {
+        poll()
+    } else {
+        state.setupPending = true
+        log.warn "initialize(): the board at ${settings.ribAddress} did not respond. The app will keep trying, " +
+                 "and will finish setting itself up as soon as the board is reachable."
+        runIn(60, "retrySetup")
+    }
+}
+
+/**
+ * Everything that needs the board to be reachable: read what it is, create the devices for it, and
+ * write the push configuration.  Returns false if the board could not be reached at all, so the
+ * caller can arrange to try again rather than leaving the app half configured.
+ */
+private boolean setupFromBoard() {
+
     // Fetched once as text and once parsed: the parsed copy is for reading counts and versions, the
     // raw text is what actually gets edited and written back.
     String raw = fetchBoardConfigRawAt(settings.ribAddress)
@@ -322,12 +353,11 @@ def initialize() {
     // original app did.  Push will not be available on such a board, but everything else still works.
     if (inputCount < 1) inputCount = inputCountFromInputCgi()
 
-    state.inputCount = inputCount
+    // Nothing answered at all -- neither the config API nor the legacy input.cgi. Do not create or
+    // touch anything on a guess; report failure so the caller can retry later.
+    if (inputCount < 1) return false
 
-    if (inputCount < 1) {
-        log.warn "initialize(): could not determine the input count from the board -- check the address"
-        return
-    }
+    state.inputCount = inputCount
 
     createChildDevices(inputCount)
 
@@ -343,11 +373,24 @@ def initialize() {
         log.warn "initialize(): ${state.provisionError}"
     }
 
-    scheduleReconcile()
+    state.setupPending = false
+    return true
+}
 
-    // Seed current state now rather than leaving every contact showing whatever it last showed
-    // until either the first sweep or the first physical edge.
-    poll()
+/**
+ * Retry the parts of setup that need the board, after it was unreachable.
+ *
+ * Backs off to the reconcile interval once the first quick retry fails, so a board that stays down
+ * for a week does not fill the log or hammer the network -- but it never gives up, because the
+ * board coming back should not require anyone to notice and click Done.
+ */
+def retrySetup() {
+    if (setupFromBoard()) {
+        log.info "The board at ${settings.ribAddress} is responding again; setup is complete."
+        poll()
+    } else {
+        runIn(300, "retrySetup")
+    }
 }
 
 /**
@@ -825,7 +868,10 @@ def relayCommand(aDevice, boolean turnOn) {
 
     // A timed ON switches off on its own, so schedule a read a little after the deadline to catch
     // it -- otherwise the device would sit showing "on" until the next sweep.
-    if (turnOn && autoOff > 0) runIn(autoOff + 5, "refreshRelays")
+    // Read the relay back a little AFTER the countdown expires, never before -- checking early
+    // would just confirm it is still on and leave the device wrong until the next sweep. The extra
+    // seconds cover the board's own timing and any clock drift over a long timer.
+    if (turnOn && autoOff > 0) runIn(autoOff + 10, "refreshRelays")
 }
 
 /**
@@ -842,11 +888,18 @@ def relayCommandHandler(resp, data) {
     String expect = data?.expect
 
     // Anything that goes wrong below is logged and left alone -- the periodic sweep will correct
-    // the device state on its next pass, so there is nothing useful to schedule here.
+    // the device state on its next pass, so there is nothing useful to schedule here. The device is
+    // left showing its previous state, which is honest: the command did not demonstrably happen.
+    if (resp?.hasError()) {
+        log.warn "relayCommand: relay ${relayNum} command did not reach the board (${resp.getErrorMessage()})"
+        noteBoardContact(false, resp.getErrorMessage())
+        return
+    }
     if (resp?.status != 200) {
         log.warn "relayCommand: board returned HTTP ${resp?.status} for relay ${relayNum}"
         return
     }
+    noteBoardContact(true, null)
 
     String body = resp.data as String
     logDebug "relayCommandHandler(): ${body}"
@@ -874,10 +927,9 @@ def refreshRelays() {
 
 def relayStatusHandler(resp, data) {
     try {
-        if (resp.status != 200) {
-            log.warn "relay status: HTTP ${resp.status} from ${settings.ribAddress}"
-            return
-        }
+        // Reachability is reported by the input sweep, which runs alongside this one -- reporting it
+        // here too would just double every transition message.
+        if (resp.hasError() || resp.status != 200) return
 
         // Same shape as input.cgi -- e.g. "&0&4&1&0&1&0&" -- so the same offset safe parsing works.
         List keys = (resp.data as String).tokenize('&')
@@ -930,18 +982,60 @@ def pollHandler(resp, data) {
     // responding and the hub's CPU spiked.  A failed sweep is not worth chasing: the next one is
     // only a few minutes away, and pushes are the real update path anyway.
     try {
+        if (resp.hasError()) {
+            noteBoardContact(false, resp.getErrorMessage())
+            return
+        }
         if (resp.status == 200 || resp.status == 207) {
             String body = resp.data as String
             if (body?.startsWith('&')) {
+                noteBoardContact(true, null)
                 doPoll(body)
             } else {
-                log.warn "RIB reconcile: unexpected body from ${settings.ribAddress}"
+                noteBoardContact(false, "unexpected response body")
             }
         } else {
-            log.warn "RIB reconcile: HTTP ${resp.status} from ${settings.ribAddress}"
+            noteBoardContact(false, "HTTP ${resp.status}")
         }
     } catch (Exception e) {
-        log.warn "RIB reconcile failed: ${e.message}"
+        noteBoardContact(false, e.message)
+    }
+}
+
+/**
+ * Track whether the board is reachable, and say something only when that changes.
+ *
+ * A board that is switched off would otherwise log an identical warning on every sweep, forever.
+ * Logging the transitions instead means the log records when it went away and when it came back,
+ * which is the part worth knowing, and stays quiet in between.
+ *
+ * Note what this deliberately does not do: it never changes a contact or switch state. If the board
+ * is unreachable we simply do not know what the doors are doing, and inventing a value -- closing
+ * everything, or forcing it open -- would be worse than showing the last known truth. The state is
+ * stale, and the app says so plainly rather than guessing.
+ */
+private noteBoardContact(boolean reachable, String detail) {
+    boolean was = (state.boardOnline != false)      // unknown counts as online, so the first failure is reported
+
+    if (reachable) {
+        state.boardOnline = true
+        state.lastContact = new Date().format("yyyy-MM-dd HH:mm:ss", location.timeZone)
+        if (!was) {
+            log.info "Relay board at ${settings.ribAddress} is reachable again."
+            // While it was away it may have rebooted, been factory reset, or had its configuration
+            // replaced -- in which case the push URLs are gone and events would silently never
+            // resume. Re-check now, or finish setup if it never completed in the first place.
+            runIn(2, (state.setupPending ? "retrySetup" : "verifyProvisioning"))
+        }
+    } else {
+        state.boardOnline = false
+        if (was) {
+            log.warn "Relay board at ${settings.ribAddress} is not responding (${detail}). Inputs and relays " +
+                     "will keep showing their last known state until it returns. Not logging this again until " +
+                     "something changes."
+        } else {
+            logDebug "board still unreachable (${detail})"
+        }
     }
 }
 
