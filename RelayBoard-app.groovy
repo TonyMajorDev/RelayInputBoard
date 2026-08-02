@@ -118,6 +118,32 @@ def mainPage() {
                 defaultValue: false
             input name: "debugOutput", type: "bool", title: "Enable debug logging", defaultValue: false
         }
+
+        section("Relay Outputs") {
+            input name: "createRelayDevices", type: "bool", submitOnChange: true,
+                title: "Create a switch device for each relay",
+                description: "Builds the control URLs for you and keeps them correct if the board's address changes.",
+                defaultValue: true
+
+            if (settings.createRelayDevices != false) {
+                input name: "relayPassword", type: "number", title: "Relay password (0 if you have not set one)",
+                    defaultValue: 0, required: false
+
+                paragraph "<b>About the auto-off timer.</b> Each relay switch has an optional " +
+                          "\"turn off automatically after N minutes\" setting. When it is on, the ON command asks " +
+                          "the board to start a countdown and switch that relay off by itself once the time is up. " +
+                          "<b>The countdown runs on the relay board, not on Hubitat</b> &mdash; so the relay still " +
+                          "switches off on time even if the hub reboots, this app crashes, your network drops, or " +
+                          "the OFF command never arrives. That makes it the right choice for anything that must " +
+                          "never be left running, such as sprinklers or a heater."
+
+                paragraph "<small>Sending OFF early cancels the countdown normally. Sending ON again restarts it " +
+                          "from the beginning. The one case it does not cover is the board itself losing power " +
+                          "mid-countdown, since the timer lives in the board's memory &mdash; check the board's " +
+                          "\"Power Failure Recovery Relay\" setting if that matters to you. The maximum is 1092 " +
+                          "minutes (about 18 hours).</small>"
+            }
+        }
         // Setup can fail in a few quiet ways (OAuth off, firmware too old, board unreachable).
         // Surface them here rather than leaving the user to find them in the logs.
         section("Status") {
@@ -414,6 +440,7 @@ def initialize() {
         state.boardModel = cfg?.network?.model
         state.firmwareTooOld = !firmwareSupportsPush(state.boardVersion)
         inputCount = (cfg?.input_link_relay?.input_cnt ?: cfg?.input_link_url?.cnt ?: 0) as int
+        state.relayCount = (cfg?.input_link_relay?.relay_cnt ?: cfg?.relay_task?.relay_cnt ?: 0) as int
 
         if (state.firmwareTooOld) {
             log.warn "initialize(): board firmware ${state.boardVersion} is older than ${MIN_FIRMWARE_TEXT}; " +
@@ -433,6 +460,8 @@ def initialize() {
     }
 
     createChildDevices(inputCount)
+
+    if ((state.relayCount ?: 0) > 0) createRelayDevices(state.relayCount as int)
 
     if (cfg && state.accessToken) {
         provisionBoard(cfg, inputCount)
@@ -582,8 +611,19 @@ private boolean writeBoardConfig(Map cfg) {
     try {
         httpPost([uri: "http://${settings.ribAddress}", path: "/api/v2/config_set.cgi",
                   requestContentType: "application/json", body: body, timeout: 20]) { resp ->
+            // A 200 is not proof of anything here. The board answers 200 and then reports the real
+            // outcome in the body as {"status":N}, so treat a non-zero status as a failure rather
+            // than reporting success and letting the read-back blame something unrelated.
+            String answer = (resp.data instanceof String) ? resp.data : "${resp.data}"
+            state.lastWriteResponse = answer
+            log.debug "writeBoardConfig(): board replied ${answer}"
+
             ok = resp.success
-            logDebug "writeBoardConfig(): response = ${resp.data}"
+            java.util.regex.Matcher m = (answer =~ /"status"\s*:\s*(-?\d+)/)
+            if (m.find() && m.group(1) != "0") {
+                ok = false
+                log.error "writeBoardConfig(): the board rejected the configuration (status ${m.group(1)})"
+            }
         }
     } catch (Exception e) {
         log.error "writeBoardConfig(): ${e.message}"
@@ -709,15 +749,193 @@ def verifyProvisioning() {
     if (!hub) return
     String expected = pushPath(hub.basePath, 1, 1)
     String actual = cfg.input_link_url.on_path instanceof List ? cfg.input_link_url.on_path[0] : null
+    def enabled = cfg.input_link_url.en
 
-    if (actual != expected) {
-        state.provisionError = "The board did not store the push URL intact. Expected ${expected.length()} characters, " +
-                               "got ${actual?.length() ?: 0} (\"${actual}\"). The firmware is likely truncating on_path, " +
-                               "so pushes will not reach the hub."
-        log.error "verifyProvisioning(): ${state.provisionError}"
-    } else {
+    if (actual == expected && enabled?.toString() == "1") {
         state.provisionError = null
         logDebug "verifyProvisioning(): board stored the push URLs intact"
+        return
+    }
+
+    // Distinguish the two very different failures, because they need opposite fixes and guessing
+    // wrong sends you down the wrong path entirely.
+    if (enabled?.toString() != "1" || (actual != null && !actual.startsWith("/apps/api"))) {
+        // Nothing of ours took. "/get" and "/post" are Dingtian's factory placeholder values, so
+        // seeing those back means the board kept its own config and ignored the write.
+        state.provisionError = "The board did not accept the push configuration &mdash; it still has " +
+                               "en=${enabled} and on_path=\"${actual}\". Those are the board's own default values, " +
+                               "so this is the write being rejected, not a length problem. " +
+                               "Board's reply to the write: ${state.lastWriteResponse ?: 'not recorded'}"
+    } else {
+        // Our path went in but came back shortened: a genuine field length limit.
+        state.provisionError = "The board shortened the push URL: sent ${expected.length()} characters, " +
+                               "stored ${actual?.length() ?: 0} (\"${actual}\"). The on_path field is too small " +
+                               "for a hub URL with an access token."
+    }
+    log.error "verifyProvisioning(): ${state.provisionError}"
+}
+
+
+// =================================================================================================
+// Relay outputs
+//
+// The board's relay API is a plain GET:
+//   http://<board>/relay_cgi.cgi?type=<t>&relay=<n>&on=<0|1>&time=<seconds>&pwd=<pw>&
+//     type 0 = straight on/off, type 2 = timed (switch on, then off after <time> seconds)
+//     relay is ZERO based here, so relay 1 on the silkscreen is relay=0
+//
+// Building these here rather than in the driver is what keeps them correct: the address lives in
+// one place, so changing it fixes every relay device at once instead of leaving the user to edit
+// eight hand written URLs.
+// =================================================================================================
+
+private String relayDni(idx) {
+    return "RIBRelay-${idx}_${app.id}"
+}
+
+private Integer relayNumberOf(aDevice) {
+    java.util.regex.Matcher m = (aDevice.deviceNetworkId =~ /^RIBRelay-(\d+)_/)
+    return m.find() ? (m.group(1) as Integer) : null
+}
+
+/** The exact URL for one relay command. Also what gets displayed on the device page. */
+private String relayUrl(int relayNumber, boolean turnOn, int autoOffSeconds) {
+    int type    = (turnOn && autoOffSeconds > 0) ? 2 : 0
+    int seconds = (turnOn && autoOffSeconds > 0) ? autoOffSeconds : 0
+    int pwd     = (settings.relayPassword ?: 0) as int
+    return "http://${settings.ribAddress}/relay_cgi.cgi?type=${type}&relay=${relayNumber - 1}" +
+           "&on=${turnOn ? 1 : 0}&time=${seconds}&pwd=${pwd}&"
+}
+
+private createRelayDevices(int relayCount) {
+    if (settings.createRelayDevices == false) return
+    for (int i = 1; i <= relayCount; i++) {
+        String dni = relayDni(i)
+        if (!getChildDevice(dni)) {
+            logDebug "createRelayDevices(): adding ${dni}"
+            addChildDevice("community", "RIB Relay Switch", dni, null, [name: "RIB Relay ${i}"])
+        }
+    }
+    refreshRelayUrls()
+}
+
+/**
+ * Push the current URLs onto every relay device.  Called after setup and whenever a device's own
+ * timer setting changes, so what is displayed always matches what would actually be sent.
+ */
+def refreshRelayUrls() {
+    for (aDevice in getAllChildDevices()) {
+        Integer n = relayNumberOf(aDevice)
+        if (n == null) continue
+
+        int autoOff = 0
+        try {
+            autoOff = (aDevice.autoOffSeconds() ?: 0) as int
+        } catch (Exception ignored) { }
+
+        String autoOffText = autoOff > 0 ? "off automatically after ${(autoOff / 60) as int} minute(s)" : "disabled"
+        aDevice.setUrls(relayUrl(n, true, autoOff), relayUrl(n, false, 0), autoOffText)
+    }
+}
+
+/**
+ * Send one relay command, then confirm it actually happened.
+ *
+ * We do not assume success: the board is asked for its real relay status a second later, and again
+ * at five seconds if it still doesn't match. Devices are always set to whatever the board reports,
+ * never to what we hoped for, so a relay that physically failed to switch shows the truth rather
+ * than a comforting lie.
+ */
+def relayCommand(aDevice, boolean turnOn) {
+    Integer n = relayNumberOf(aDevice)
+    if (n == null) {
+        log.warn "relayCommand(): ${aDevice} is not a relay device"
+        return
+    }
+
+    int autoOff = 0
+    try {
+        autoOff = (aDevice.autoOffSeconds() ?: 0) as int
+    } catch (Exception ignored) { }
+
+    String url = relayUrl(n, turnOn, turnOn ? autoOff : 0)
+    logDebug "relayCommand(): ${url}"
+
+    Map expected = (state.relayExpected ?: [:])
+    expected[n as String] = turnOn ? "on" : "off"
+    state.relayExpected = expected
+
+    asynchttpGet("relayCommandHandler", [uri: url, timeout: 10])
+
+    // Confirm shortly after, then once more a few seconds later if it hasn't caught up yet.
+    runIn(1, "verifyRelays")
+    runIn(5, "verifyRelaysFinal")
+
+    // A timed ON switches off on its own, so schedule a read a little after the deadline to catch
+    // it -- otherwise the device would sit showing "on" until the next sweep.
+    if (turnOn && autoOff > 0) runIn(autoOff + 5, "refreshRelays")
+}
+
+def relayCommandHandler(resp, data) {
+    if (resp?.status != 200) {
+        log.warn "relayCommand: board returned HTTP ${resp?.status}"
+    } else {
+        logDebug "relayCommandHandler(): ${resp.data}"
+    }
+}
+
+/** Read every relay's real state from the board. */
+def refreshRelays(Boolean finalCheck = false) {
+    asynchttpGet("relayStatusHandler",
+                 [uri: "http://${settings.ribAddress}/relay_cgi_load.cgi", timeout: 10],
+                 [finalCheck: (finalCheck == true)])
+}
+
+def verifyRelays()      { refreshRelays(false) }
+def verifyRelaysFinal() { refreshRelays(true) }
+
+def relayStatusHandler(resp, data) {
+    try {
+        if (resp.status != 200) {
+            log.warn "relay status: HTTP ${resp.status} from ${settings.ribAddress}"
+            return
+        }
+
+        // Same shape as input.cgi -- e.g. "&0&4&1&0&1&0&" -- so the same offset safe parsing works.
+        List keys = (resp.data as String).tokenize('&')
+        int offset = channelCountOffset(keys)
+        if (offset < 0) {
+            log.warn "relay status: could not parse '${resp.data}'"
+            return
+        }
+        int count = toInt(keys[offset])
+
+        boolean isFinal = (data?.finalCheck == true)
+        Map expected = (state.relayExpected ?: [:])
+
+        for (aDevice in getAllChildDevices()) {
+            Integer n = relayNumberOf(aDevice)
+            if (n == null || n < 1 || n > count) continue
+
+            int valueIndex = offset + n
+            if (valueIndex >= keys.size()) continue
+
+            String actual = (keys[valueIndex] == "1") ? "on" : "off"
+            aDevice.setRelayState(actual)
+
+            String want = expected[n as String]
+            if (want && actual == want) {
+                expected.remove(n as String)          // settled, stop watching it
+            } else if (want && isFinal) {
+                log.error "Relay ${n} (${aDevice}) did not switch ${want}. The board still reports ${actual} " +
+                          "five seconds after the command. Check the relay password and that relay ${n} exists on this board."
+                expected.remove(n as String)
+            }
+        }
+
+        state.relayExpected = expected
+    } catch (Exception e) {
+        log.warn "relay status failed: ${e.message}"
     }
 }
 
@@ -734,6 +952,11 @@ def poll() {
     def requestParams = [ uri: "http://" + settings.ribAddress + "/input.cgi", timeout: 10 ]
     logDebug "poll(): $requestParams"
     asynchttpGet("pollHandler", requestParams)
+
+    // Relays get swept too. Their state can change without us being told -- an auto-off timer
+    // expiring, the board's own web page, a physical switch wired to an input -- so the same
+    // "eventually correct" guarantee should cover them.
+    if (settings.createRelayDevices != false && (state.relayCount ?: 0) > 0) refreshRelays()
 }
 
 def pollHandler(resp, data) {

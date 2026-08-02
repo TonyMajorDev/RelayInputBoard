@@ -83,9 +83,49 @@ did. It also won't disable inputs that switch relays locally unless you ask it t
 
 ## Controlling Relays from Hubitat
 
-Also, for the Relays, this App does not yet handle that, but it will.  For now, I create a new device for each relay used with this Hubitat device driver:  https://github.com/hubitat/HubitatPublic/blob/master/examples/drivers/httpGetSwitch.groovy
+The app now creates a **RIB Relay Switch** device for each relay on the board automatically. You no
+longer need to add an `httpGetSwitch` device and paste URLs into it by hand — the app knows the
+board's address, builds the URLs itself, and rewrites them on every relay device if the address ever
+changes. Import the driver alongside the contact sensor one:
 
-**Nothing in the event-driven change touches the relays.** The app never sends a relay command, and when it writes its push settings to the board it reads the board's whole configuration, changes only the input-related sections, and writes the rest back byte for byte. Your relay passwords, relay tasks, power-failure recovery setting and the timed auto-off behaviour below all survive untouched.
+```
+https://raw.githubusercontent.com/TonyMajorDev/RelayInputBoard/event-driven/RelayBoard-relay-switch-driver.groovy
+```
+
+The ON and OFF URLs are shown on each device page under Current States as `onUrl` and `offUrl`, so
+you can see exactly what is being sent. They are read-only on purpose — the app owns them, and
+letting them be edited is how they would drift out of sync with the board's address.
+
+If you'd rather keep your existing hand-built switch devices, turn off "Create a switch device for
+each relay" in the app and nothing will be created.
+
+### The auto-off timer
+
+Each relay switch has an optional **"Use the board's built-in auto-off timer"** setting with a time
+in minutes. When enabled, ON sends `type=2` with a `time=` value, which asks the board to start a
+countdown and switch that relay off by itself when it expires.
+
+**The countdown runs on the relay board, not on Hubitat.** That is the whole point: the relay
+switches off on schedule even if the hub reboots, this app crashes, the network drops, or the OFF
+command is never sent. A Hubitat-side timer would fail in exactly those situations. Use it for
+anything that must never be left running — sprinklers, a heater, a pump.
+
+- Sending OFF early cancels the countdown normally.
+- Sending ON again restarts the countdown from the beginning.
+- Maximum is 1092 minutes (about 18 hours), because the board stores the value in a 16-bit field.
+- The one gap: the timer lives in the board's memory, so the board *losing power* mid-countdown
+  cancels it. Check the board's "Power Failure Recovery Relay" setting if that matters for a
+  particular circuit.
+
+### How relay state is kept accurate
+
+The app never assumes a command worked. After sending one it reads the board's real relay status
+back after 1 second, and again at 5 seconds if it still doesn't match. Devices are always set to
+what the board actually reports, never to what was requested — so a relay that failed to switch
+shows the truth. If it still hasn't changed after 5 seconds, an error is logged naming the relay.
+
+Relay states are also refreshed on the same reconcile sweep as the inputs, which is what catches an
+auto-off timer expiring or someone switching a relay from the board's own web page.
 
 Here is an example of how I control a light (same board as the door sensors, `.30`): 
 
