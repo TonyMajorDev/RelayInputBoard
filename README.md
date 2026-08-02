@@ -53,6 +53,10 @@ I will eventually record a video of how to set everything up.
 That is the only hard requirement. If your board is newer than that, you very likely do not need to
 upgrade anything.
 
+A board older than that still works — it just can't push. Its inputs and relays are created and kept
+up to date by the reconcile sweep instead, so it behaves like the original polling version of this
+app, at whatever interval you chose. The app tells you on its settings page when that is the case.
+
 Later releases did fix bugs in this same feature, but none of them affect how this app uses it:
 
 | Fix | Version | Relevant here? |

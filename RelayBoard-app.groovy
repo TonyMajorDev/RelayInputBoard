@@ -149,16 +149,18 @@ def mainPage() {
                 paragraph "Board push configured: ${state.lastProvisioned}"
             }
             // The single most useful number on this page: if it is zero, the board has never once
-            // called the hub, and nothing else here matters yet.
+            // called the hub, and nothing else here matters yet.  Except on a board that cannot push
+            // at all, where saying so would just be restating the firmware message above.
             if (state.pushCount) {
                 paragraph "Pushes received from the board: <b>${state.pushCount}</b> &mdash; last was ${state.lastPush}"
-            } else {
+            } else if (state.configApiAvailable != false) {
                 paragraph "<b>No pushes have been received from the board yet.</b> Until this changes, inputs are " +
                           "only being updated by the reconcile sweep."
             }
             // Show the endpoint so it can be tested by hand, or pasted into the board's own
             // "Input Link URL" page if automatic provisioning will not work on your firmware.
-            if (state.accessToken) {
+            // Pointless on a board with no push support at all, so leave it out there.
+            if (state.accessToken && state.configApiAvailable != false) {
                 Map hub = hubEndpointParts()
                 if (hub) {
                     paragraph "<small><b>Push endpoint.</b> The board is told to call these. Input 1 as an example " +
@@ -186,6 +188,14 @@ def mainPage() {
                               "\"Input Link URL\" support and cannot push events.</b> Until it is updated, inputs " +
                               "will only refresh on the reconcile sweep above."
                 }
+            } else if (state.configApiAvailable == false) {
+                // The board is answering, it just predates the API that reports its version. Say
+                // that, rather than "has not answered yet", which reads like a connection problem.
+                paragraph "This board is too old to report its firmware version to the app &mdash; the API that " +
+                          "does so arrived in ${MIN_FIRMWARE_TEXT}, the same release that added event push. " +
+                          "Its version is on the board's own web page under Setting. " +
+                          "<b>Everything works except push:</b> its inputs and relays are created and kept up to " +
+                          "date by the reconcile sweep, exactly like the original polling version of this app."
             } else {
                 paragraph "Board firmware version unknown &mdash; the board has not answered yet."
             }
@@ -341,12 +351,14 @@ private boolean setupFromBoard() {
     }
 
     int inputCount = 0
+    int relayCount = 0
+    state.configApiAvailable = (cfg != null)
     if (cfg) {
         state.boardVersion = cfg?.network?.sw_ver
         state.boardModel = cfg?.network?.model
         state.firmwareTooOld = !firmwareSupportsPush(state.boardVersion)
         inputCount = (cfg?.input_link_relay?.input_cnt ?: cfg?.input_link_url?.cnt ?: 0) as int
-        state.relayCount = (cfg?.input_link_relay?.relay_cnt ?: cfg?.relay_task?.relay_cnt ?: 0) as int
+        relayCount = (cfg?.input_link_relay?.relay_cnt ?: cfg?.relay_task?.relay_cnt ?: 0) as int
         // Boards ship with every input wired to the matching relay (I1->R1 ...). That is invisible
         // unless you go looking at the board's web page, and it fights with using the relays for
         // anything else -- so surface it instead of letting people hunt for a mystery relay click.
@@ -358,9 +370,14 @@ private boolean setupFromBoard() {
         }
     }
 
-    // Older firmware has no /api/v2/config.cgi at all, so fall back to counting inputs the way the
-    // original app did.  Push will not be available on such a board, but everything else still works.
-    if (inputCount < 1) inputCount = inputCountFromInputCgi()
+    // Older firmware has no /api/v2/config.cgi at all -- boards from before 2024 answer neither the
+    // config API nor report their channel counts through it.  Fall back to asking the input and
+    // relay endpoints directly, which have existed for as long as these boards have.  Push will not
+    // be available on such a board, but the inputs, the relays and the sweep all still work.
+    if (inputCount < 1) inputCount = countFromCgi("/input.cgi")
+    if (relayCount < 1) relayCount = countFromCgi("/relay_cgi_load.cgi")
+
+    state.relayCount = relayCount
 
     // Nothing answered at all -- neither the config API nor the legacy input.cgi. Do not create or
     // touch anything on a guess; report failure so the caller can retry later.
@@ -370,16 +387,18 @@ private boolean setupFromBoard() {
 
     createChildDevices(inputCount)
 
-    if ((state.relayCount ?: 0) > 0) createRelayDevices(state.relayCount as int)
+    if (relayCount > 0) createRelayDevices(relayCount)
 
     if (raw && cfg && state.accessToken) {
         provisionBoard(raw, inputCount)
     } else if (!cfg) {
         // The board answered input.cgi but not the config API, so it predates /api/v2/config.cgi.
         // Degrade gracefully: inputs still track, just on the sweep rather than on push.
-        state.provisionError = "The board did not answer /api/v2/config.cgi, so push could not be set up. " +
-                               "Firmware V3.1.2776 or later is required. Inputs will still update on the reconcile sweep."
-        log.warn "initialize(): ${state.provisionError}"
+        state.provisionError = "This board is too old for event push &mdash; that needs firmware ${MIN_FIRMWARE_TEXT} " +
+                               "or later, and this one predates the configuration API entirely. Its inputs and relays " +
+                               "still work, updated by the reconcile sweep instead. Nothing is broken; this board just " +
+                               "behaves like the original polling version of the app."
+        log.warn "initialize(): board at ${settings.ribAddress} predates the config API, so event push is unavailable"
     }
 
     state.setupPending = false
@@ -1146,23 +1165,33 @@ private int toInt(value) {
  * Legacy input count probe, used only when the board is too old to answer /api/v2/config.cgi.
  * Shares the same offset safe parsing as the sweep.
  */
-private int inputCountFromInputCgi() {
-    int inputCount = 0
+/**
+ * How many channels the board has, asked directly of the board.
+ *
+ * Works against "/input.cgi" for inputs and "/relay_cgi_load.cgi" for relays -- both answer with the
+ * same ampersand delimited shape, so the same offset safe parsing finds the count in either.  This
+ * is the fallback for boards too old to have the config API, which is the only way to learn their
+ * channel counts at all.
+ *
+ * Returns 0 if the board did not answer or the response made no sense.
+ */
+private int countFromCgi(String path) {
+    int count = 0
     try {
-        httpGet("http://" + settings.ribAddress + "/input.cgi") { resp ->
+        httpGet("http://" + settings.ribAddress + path) { resp ->
             if (resp.success) {
-                logDebug "initialize(): Response = " + resp.data
+                logDebug "countFromCgi(${path}): ${resp.data}"
                 List keys = (resp.data as String).tokenize('&')
                 int offset = channelCountOffset(keys)
-                if (offset >= 0) inputCount = toInt(keys[offset])
-            } else {
-                if (resp.data) logDebug "initialize(): Failed to get Input Count ${resp.data}"
+                if (offset >= 0) count = toInt(keys[offset])
+            } else if (resp.data) {
+                logDebug "countFromCgi(${path}): failed, ${resp.data}"
             }
         }
     } catch (Exception e) {
-        log.warn "initialize(): Call failed: ${e.message}"
+        log.warn "countFromCgi(${path}): ${e.message}"
     }
-    return inputCount
+    return count
 }
 
 // Note: the original checked "|| settings?.debugOutput == null", which meant debug logging was on
