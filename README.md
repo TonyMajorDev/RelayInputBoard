@@ -28,16 +28,16 @@ I will eventually record a video of how to set everything up.
 
 1. Buy the board on ebay.  It can take a few weeks to months to arrive!  
 2. Connect the board to your network and log in to the admin console using your browser.  
-3. There is nothing to configure on the board by hand. The app fills in the "Input Link URL" page itself, and sets "Input Control Relay" to No for you — see [Should inputs be allowed to switch relays on the board?](#should-inputs-be-allowed-to-switch-relays-on-the-board) for what that means and the one case where you'd want to leave it alone.  
+3. There is nothing to configure on the board by hand. The app fills in the "Input Link URL" page itself, and sets "Input Control Relay" to No for you — see [Inputs no longer switch relays on the board](#inputs-no-longer-switch-relays-on-the-board) for why.  
 4. I like to setup the board to use DHCP, so the router assigns an IP address.  I also like to set the "hostname" in the setting page, so I can browse to this admin console from the browser using http://hostname.local  Then save and reboot the board.  
 5. Go to your router and manually assign the IP so that it NEVER changes.  Write down that IP. 
 6. Go to http://hubitat.local and expand the Developer Tools.  Click on Apps Code, New App button, Import button, paste this url: https://raw.githubusercontent.com/TonyMajorDev/RelayInputBoard/event-driven/RelayBoard-app.groovy
 7. Click import button, Yes, overwrite, Click the Save button.
 8. **Enable OAuth.** Still in the app code editor, click the "OAuth" button at the top right, click "Enable OAuth in App", then Update. This is what lets the board send events to the hub. It is a one-time step, and the app will tell you on its settings page if you forget. (The board itself does not do OAuth — enabling this simply makes Hubitat mint a token that gets included in the URL the board calls.) Then click "<< Apps code" to go back.
 9. Now the drivers — there are two. Click on "Drivers code", Click New Driver button, Import button, paste this url: https://raw.githubusercontent.com/TonyMajorDev/RelayInputBoard/event-driven/RelayBoard-contact-sensor-driver.groovy — then Import, Yes overwrite, Save. Now click New Driver again and do the same with the relay switch driver: https://raw.githubusercontent.com/TonyMajorDev/RelayInputBoard/event-driven/RelayBoard-relay-switch-driver.groovy
-10. Click "<< Drivers code" to go back. (If you only want the door sensors and not the relay switches, you can skip the second driver and turn off "Create a switch device for each relay" in the app.)
+10. Click "<< Drivers code" to go back. Both drivers are required — the app creates a device for every input and every relay on the board.
 11. Now let's setup.  At this point, you should have your sensors wired into the input terminals on the Relay/Input board (RIB).  Now, above the develtoper tools, Click on "Apps" (Not "Apps code").  On the top right, click "Add User App".  Find and select "RIB App (Event)"
-12. Now, we are about done.  Remember that IP Address you wrote down from step #5?  Type that into the "Relay Interface Board Address".  It is probably starts with "192.168."  There is also a "Search the network for relay boards" link that will try to find boards for you and let you pick one from a list — but Hubitat is fussy about letting apps see that kind of network traffic, so if it comes up empty just type the address in. Typing it in always works.  
+12. Now, we are about done.  Remember that IP Address you wrote down from step #5?  Type that into the "Relay Interface Board Address".  It probably starts with "192.168."  
 13. Click "Done" button! 
 14. Now if everything worked, it communicated with the RIB, asked how many inputs and relays it has, created a **RIB Input** device per input and a **RIB Relay** device per relay, **and told the board to push future changes straight to the hub**.  Go check your Devices.  You can select an input you have connected and see if the state changes from contact: open to closed — it should now react instantly rather than up to a second later.  The numbers in the device names match the numbers printed next to the screw terminals on the board.  So, "I3" printed on the board is "RIB Input 3", and "R3" is "RIB Relay 3".  
 15. Check the app's settings page for a red error message before you trust any of it. That is where OAuth problems, old firmware and failed board writes are reported.  
@@ -91,7 +91,6 @@ Use `ota_tool_v4_1_1.exe` from Dingtian's upgrade tool. Turn off your PC firewal
 - **A relay clicks whenever a door opens or closes.** The board is linking inputs to relays. Turn on "Stop inputs from switching relays on the board itself" and click Done.
 - **A relay device shows the wrong state.** The app sets devices from what the board actually reports, so this usually means the command didn't reach the board. Check the log for `Relay N did not switch` and verify the relay password in the app matches the board's.
 - **Nothing works after a board factory reset.** Open the app and click Done to re-provision it.
-- **Discovery finds nothing.** Expected on some hubs — Hubitat is restrictive about handing this kind of network traffic to an app. Type the address in instead; it always works.
 
 ## If you run more than one board
 
@@ -105,36 +104,28 @@ Note that one board can happily do both — door sensors on its inputs and light
 app only writes input-related settings, so the relay side of that board keeps working exactly as it
 did.
 
-### Should inputs be allowed to switch relays on the board?
+### Inputs no longer switch relays on the board
 
-Almost always no, and the app turns it off by default. Boards ship with input 1 wired to relay 1,
-input 2 to relay 2, and so on. With door sensors on the inputs that means every door event clicks a
-relay, which is baffling to debug and makes the relays unusable for anything else.
+Boards leave the factory with input 1 wired to relay 1, input 2 to relay 2, and so on, so the board
+switches its own relays whenever an input changes. With contact sensors on the inputs that means
+every door event clicks a relay — baffling to track down, and it makes those relays unusable for
+anything else.
 
-The one case where you *should* leave it on is a **physical switch wired to an input, driving a
-relay directly**. That light then keeps working while the hub is rebooting, updating, or dead —
-the same reasoning behind using the board's own timer for sprinklers rather than a Hubitat timer.
-A wall switch that stops working when a computer is down is a bad wall switch.
-
-So: leave the toggle on unless you deliberately wired a switch to an input.
+The app turns this off for you (it sets *Input Control Relay* and *Relay Feedback Momentary Input*
+to No). There is no setting for it, because there is no way to use this app that wants it left on.
+It does not affect anything else: controlling relays from Hubitat, relay tasks scheduled on the
+board, and the auto-off timer all behave exactly the same.
 
 ## Controlling Relays from Hubitat
 
-The app now creates a **RIB Relay Switch** device for each relay on the board automatically. You no
-longer need to add an `httpGetSwitch` device and paste URLs into it by hand — the app knows the
-board's address, builds the URLs itself, and rewrites them on every relay device if the address ever
-changes. Import the driver alongside the contact sensor one:
-
-```
-https://raw.githubusercontent.com/TonyMajorDev/RelayInputBoard/event-driven/RelayBoard-relay-switch-driver.groovy
-```
+The app creates a **RIB Relay Switch** device for every relay on the board. There is nothing to
+configure — it knows the board's address, builds the control URLs itself, and rewrites them on every
+relay device if that address ever changes. An 8-relay board gives you 8 relay switches in your
+devices list, ready to use in rules, dashboards and Alexa exactly like any other switch.
 
 The ON and OFF URLs are shown on each device page under Current States as `onUrl` and `offUrl`, so
 you can see exactly what is being sent. They are read-only on purpose — the app owns them, and
 letting them be edited is how they would drift out of sync with the board's address.
-
-If you'd rather keep your existing hand-built switch devices, turn off "Create a switch device for
-each relay" in the app and nothing will be created.
 
 ### The auto-off timer
 
@@ -166,8 +157,8 @@ auto-off timer expiring or someone switching a relay from the board's own web pa
 
 ### The URLs, for reference
 
-You don't need these any more — the app builds them — but this is what it sends, and it's still
-useful for a board this app doesn't manage, or from Rule Machine.
+You don't need these — the app builds and sends them for you — but this is what goes on the wire,
+and it's still useful for a second board that this app doesn't manage.
 
 A plain light on relay 7:
 
@@ -184,8 +175,8 @@ Off: http://192.168.50.101/relay_cgi.cgi?type=0&relay=0&on=0&time=0&pwd=0&
 ```
 
 Two things to notice. `relay=` is **zero based**, so `relay=6` is the relay marked R7 on the board.
-And the ON url for the sprinkler uses `type=2` with `time=1800` — which is the same board-side timer
-the app's auto-off checkbox turns on, and the reason the sprinklers can never accidentally stay on.
+And the ON url for the sprinkler uses `type=2` with `time=1800` — the same board-side timer the
+relay device's auto-off setting uses, and the reason the sprinklers can never accidentally stay on.
 
 ## A note on where timers should live
 

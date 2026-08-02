@@ -60,7 +60,6 @@ definition(
 
 preferences {
     page name: "mainPage", title: "", install: true, uninstall: true
-    page name: "discoveryPage", title: "", install: false, uninstall: false
 }
 
 // Minimum firmware that has the "Input Link URL" feature this app depends on, and the version
@@ -97,8 +96,6 @@ def mainPage() {
             // board, check the model shown under "Board Firmware" below to confirm you have the
             // right one before clicking Done.
             input name: "ribAddress", type: "text", title: "Relay Interface Board Address", submitOnChange: true, required: true, defaultValue: "192.168.50.30" // local name resolution does not work on hubitat hub "homerelays.local"
-            href name: "toDiscovery", page: "discoveryPage", title: "Search the network for relay boards",
-                 description: "Optional. You can always just type the IP address above."
             // This is the safety net sweep, not the primary update path -- inputs normally update
             // the instant they change.  Offered as an enum rather than a free number because each
             // choice maps to one of Hubitat's fixed slot schedulers, which are cheaper and cannot
@@ -106,59 +103,21 @@ def mainPage() {
             input name: "reconcileMinutes", type: "enum", title: "How often to re-sync all inputs as a safety net",
                 options: ["1": "Every minute", "5": "Every 5 minutes", "10": "Every 10 minutes", "15": "Every 15 minutes", "30": "Every 30 minutes"],
                 defaultValue: "5", required: true
-            // On by default. Boards ship with every input wired to the matching relay, which is
-            // almost never what someone monitoring door sensors wants -- a door closing then clicks
-            // a relay for no apparent reason, and it fights any independent use of the relays.
-            //
-            // The one case for turning this off is a physical switch wired to an input driving a
-            // relay directly, so that light keeps working while the hub is down. That is a genuine
-            // failsafe and worth preserving, which is why this stays a choice rather than something
-            // the app just does. It has no bearing on event push either way.
-            input name: "disableInputRelayLink", type: "bool",
-                title: "Stop inputs from switching relays on the board itself",
-                description: "Leave this on. Most people never need to change it.",
-                defaultValue: true
-
-            paragraph "<small><b>What this does.</b> On the board's \"Input Link Relay\" page it sets " +
-                      "<i>Input Control Relay</i> and <i>Relay Feedback Momentary Input</i> to <b>No</b>. Boards " +
-                      "leave the factory with input 1 wired to relay 1, input 2 to relay 2, and so on, so the board " +
-                      "switches its own relays whenever an input changes. With door sensors on the inputs that means " +
-                      "every door event clicks a relay &mdash; confusing to track down, and it makes those relays " +
-                      "unusable for anything else. Turning it off leaves Hubitat as the only thing that reacts to " +
-                      "an input.</small>"
-
-            paragraph "<small><b>It does not affect anything else.</b> Event push, controlling relays from Hubitat, " +
-                      "relay tasks scheduled on the board, and the auto-off timer all work exactly the same either " +
-                      "way.</small>"
-
-            paragraph "<small><b>When to turn it off.</b> Only if you have a physical switch wired to an input that " +
-                      "you want to keep operating its relay directly &mdash; so that light still works while the hub " +
-                      "is rebooting, updating, or down. That is a genuinely good reason. If your inputs are door and " +
-                      "window sensors, it does not apply to you.</small>"
-
-            if (state.inputLinkRelayActive && settings.disableInputRelayLink == false) {
-                paragraph "<b>Heads up:</b> this board is currently letting its inputs switch its own relays, and " +
-                          "the setting above is turned off, so the app will leave it that way. If you did not set " +
-                          "that up deliberately, turn the setting on."
-            }
             input name: "debugOutput", type: "bool", title: "Enable debug logging", defaultValue: false
         }
 
         section("Relay Outputs") {
-            input name: "createRelayDevices", type: "bool", submitOnChange: true,
-                title: "Create a switch device for each relay",
-                description: "Builds the control URLs for you and keeps them correct if the board's address changes.",
-                defaultValue: true
-
-            if (settings.createRelayDevices != false) {
-                input name: "relayPassword", type: "number", title: "Relay password (0 if you have not set one)",
-                    defaultValue: 0, required: false
-
-                paragraph "<small>Each relay device has its own optional auto-off timer, set on the device page. " +
-                          "It is worth using for anything that must never be left running, such as sprinklers " +
-                          "&mdash; the countdown runs on the board rather than on the hub. The device page explains " +
-                          "how it behaves.</small>"
+            if (state.relayCount) {
+                paragraph "<b>${state.relayCount} RIB Relay switches are available in your devices list.</b>"
             }
+
+            input name: "relayPassword", type: "number", title: "Relay password (0 if you have not set one)",
+                defaultValue: 0, required: false
+
+            paragraph "<small>Each relay device has its own optional auto-off timer, set on the device page. " +
+                      "It is worth using for anything that must never be left running, such as sprinklers " +
+                      "&mdash; the countdown runs on the board rather than on the hub. The device page explains " +
+                      "how it behaves.</small>"
         }
         // Setup can fail in a few quiet ways (OAuth off, firmware too old, board unreachable).
         // Surface them here rather than leaving the user to find them in the logs.
@@ -237,144 +196,6 @@ def mainPage() {
 }
 
 
-// =================================================================================================
-// Board discovery
-//
-// The vendor's own IP finder works by sending a two byte probe (0x05 0xAA) to the multicast group
-// 224.0.2.11 on port 60000; boards on the LAN answer, which reveals their addresses.  See
-// linux_find_relay_ip.txt in the SDK.
-//
-// Caveat worth knowing: Hubitat is restrictive about handing unsolicited LAN traffic to an app, so
-// this may legitimately find nothing on some hubs even when boards are present.  It is offered as a
-// convenience only -- typing the IP address by hand is fully supported and always works.  Anything
-// the probe turns up is verified by actually asking it for its config before being offered, so a
-// stray reply from some other device on the network can't end up in the list.
-// =================================================================================================
-
-def discoveryPage() {
-    // refreshInterval re-renders the page while replies trickle in, so results appear as they land.
-    dynamicPage(name: "discoveryPage", title: "Search for Relay Boards", refreshInterval: 5) {
-
-        // The page refreshes every few seconds so results can appear as they arrive, which means
-        // this method runs repeatedly.  Only kick off a genuinely new search when the user asked
-        // for one, when arriving here for the first time, or when the last search has gone stale --
-        // otherwise every refresh would fire another probe and the scan would never end.
-        boolean stale = !state.discoveryStartedAt || (now() - (state.discoveryStartedAt as Long)) > 120000
-        if (params?.restart || stale) startDiscovery()
-
-        Map found = (state.discovered ?: [:])
-
-        section {
-            if (found) {
-                paragraph "Found ${found.size()} board${found.size() == 1 ? '' : 's'}."
-                input name: "discoveredBoard", type: "enum", title: "Use this board", submitOnChange: true,
-                      required: false, options: found.collectEntries { ip, info ->
-                          [(ip): "${ip}  --  ${info.model ?: 'Dingtian'} ${info.sw_ver ?: ''} (${info.inputs ?: '?'} inputs)"]
-                      }
-                if (settings.discoveredBoard) {
-                    app.updateSetting("ribAddress", [value: settings.discoveredBoard, type: "text"])
-                    paragraph "<b>Board address set to ${settings.discoveredBoard}.</b> Go back and click Done."
-                }
-            } else if (state.discovering) {
-                paragraph "Searching... boards usually answer within a few seconds."
-            } else {
-                paragraph "<b>No boards found.</b>"
-                paragraph "<small>This does not necessarily mean anything is wrong with your board. Hubitat is " +
-                          "restrictive about passing this kind of network traffic to an app, so discovery simply " +
-                          "will not work on some hubs. Go back and type the IP address in directly &mdash; you can " +
-                          "find it in your router's client list, or with Dingtian's own IP finder tool from " +
-                          "<a href='${FIRMWARE_PAGE}' target='_blank'>the download page</a>.</small>"
-            }
-        }
-
-        section {
-            href name: "rescan", page: "discoveryPage", title: "Search again", description: "",
-                 params: [restart: true]
-            href name: "backToMain", page: "mainPage", title: "Back", description: ""
-        }
-    }
-}
-
-/** Fire the multicast probe and listen briefly for replies. */
-private startDiscovery() {
-    state.discovering = true
-    state.discovered = [:]
-    state.discoveryProbed = []
-    state.discoveryStartedAt = now()
-
-    // Every step here can legitimately fail -- most often when the app has not been installed yet,
-    // since discovery is reachable from the setup page before the first Done.  None of it is worth
-    // breaking the page over, because typing the address by hand is always available.
-    try {
-        // Listen to raw LAN traffic for the duration of the search only.  Leaving this subscription
-        // in place would hand this app every LAN message the hub sees, which is exactly the kind of
-        // constant background work this rewrite exists to remove -- so it is always torn down.
-        subscribe(location, null, "lanDiscoveryHandler", [filterEvents: false])
-
-        String probe = hubitat.helper.HexUtils.byteArrayToHexString([0x05, 0xAA] as byte[])
-        sendHubCommand(new hubitat.device.HubAction(probe,
-            hubitat.device.Protocol.LAN,
-            [type: hubitat.device.HubAction.Type.LAN_TYPE_UDPCLIENT,
-             destinationAddress: "224.0.2.11:60000",     // port 60000, per the SDK's linux_find_relay_ip.txt
-             encoding: hubitat.device.HubAction.Encoding.HEX_STRING]))
-
-        logDebug "startDiscovery(): sent probe to 224.0.2.11:60000"
-        runIn(20, "stopDiscovery")
-    } catch (Exception e) {
-        state.discovering = false
-        log.warn "startDiscovery(): discovery is unavailable on this hub (${e.message}). Enter the board address manually."
-    }
-}
-
-def stopDiscovery() {
-    state.discovering = false
-    try {
-        // Safe to drop everything: this app holds no other subscriptions -- it is driven by the
-        // board pushing to its endpoint and by a scheduled sweep, neither of which uses subscribe().
-        unsubscribe()
-    } catch (Exception e) {
-        log.warn "stopDiscovery(): ${e.message}"
-    }
-    logDebug "stopDiscovery(): found ${(state.discovered ?: [:]).size()} board(s)"
-}
-
-/**
- * Any LAN message that arrives while a search is running.  We only care about the sender's address;
- * the reply payload format isn't documented, so rather than trying to interpret it we just ask the
- * sender whether it is in fact a Dingtian board.
- */
-def lanDiscoveryHandler(evt) {
-    if (!state.discovering) return
-
-    try {
-        Map msg = parseLanMessage(evt.description)
-        String ip = hexToIp(msg?.ip)
-        if (!ip || state.discovered?.containsKey(ip)) return
-
-        // Verifying costs a real HTTP request, and on a busy network this handler can see a lot of
-        // unrelated traffic.  Only try each address once, and stop after a sensible number, so a
-        // chatty LAN can't turn a 20 second search into a long stall.
-        List probed = (state.discoveryProbed ?: [])
-        if (probed.contains(ip) || probed.size() >= 30) return
-        probed << ip
-        state.discoveryProbed = probed
-
-        // A board answers /api/v2/config.cgi with a config blob; anything else on the network
-        // won't, so this filters out unrelated chatter for free.
-        Map cfg = fetchBoardConfigAt(ip, 5)
-        if (cfg?.input_link_relay != null || cfg?.network?.model) {
-            state.discovered[ip] = [
-                model:   cfg?.network?.model,
-                sw_ver:  cfg?.network?.sw_ver,
-                inputs:  cfg?.input_link_relay?.input_cnt
-            ]
-            log.info "Discovered relay board at ${ip}: ${cfg?.network?.model} ${cfg?.network?.sw_ver}"
-        }
-    } catch (Exception e) {
-        logDebug "lanDiscoveryHandler(): ignored a message (${e.message})"
-    }
-}
-
 /**
  * Is this firmware new enough to push events?
  *
@@ -400,12 +221,6 @@ private List parseFirmware(String version) {
     java.util.regex.Matcher m = (version =~ /(\d+)\.(\d+)\.(\d+)/)
     if (!m.find()) return null
     return [m.group(1) as int, m.group(2) as int, m.group(3) as int]
-}
-
-/** "C0A80164" -> "192.168.1.100" */
-private String hexToIp(String hex) {
-    if (!hex || hex.length() != 8) return null
-    return [0, 2, 4, 6].collect { Integer.parseInt(hex.substring(it, it + 2), 16) }.join(".")
 }
 
 
@@ -454,13 +269,10 @@ def initialize() {
 
     unschedule()
 
-    // If the user clicked Done while a discovery scan was still running, the unschedule() above
-    // just cancelled its teardown -- so tear it down here instead. Otherwise the app would keep a
-    // subscription to all LAN traffic alive indefinitely.
-    unsubscribe()
-    state.discovering = false
-
-    state.remove('working')     // leftover from the old polling mutex; harmless, but don't keep it around
+    // Leftovers from earlier versions of this app: the old polling mutex, and state from a network
+    // discovery feature that never worked reliably on Hubitat and has been removed.
+    state.remove('working')
+    ['discovering', 'discovered', 'discoveryProbed', 'discoveryStartedAt'].each { state.remove(it) }
     state.oauthError = null
     state.provisionError = null
 
@@ -630,8 +442,7 @@ private Map fetchBoardConfig() {
 }
 
 /**
- * Same, but against an arbitrary address -- used while verifying discovery results, where a short
- * timeout matters because most addresses tried will not be relay boards at all.
+ * Same, but against an arbitrary address and with a caller supplied timeout.
  */
 private Map fetchBoardConfigAt(String address, int timeoutSeconds = 15) {
     String raw = fetchBoardConfigRawAt(address, timeoutSeconds)
@@ -829,20 +640,23 @@ private provisionBoard(String raw, int inputCount) {
                   buildInputLinkUrlBlock(n, hub.host, hub.port, hub.basePath) +
                   raw.substring(bounds[1])
 
-    // Opt in, and a targeted edit rather than a rewrite. This governs only inputs driving relays;
-    // relay control via relay_cgi.cgi, the type=2 timed auto-off used for sprinklers, relay_task
-    // and everything under relay_connect are untouched.
+    // Always stop the board switching its own relays from its own inputs.
     //
-    // Both patterns match a key followed by a number, so neither can match the "input_link_relay"
-    // section header, which is followed by an opening brace.
-    if (settings.disableInputRelayLink != false) {
-        String before = body
-        body = body.replaceFirst(/"input_link_relay"\s*:\s*\d+/, '"input_link_relay":0')
-                   .replaceFirst(/"relay_feedback_momentary_input"\s*:\s*\d+/, '"relay_feedback_momentary_input":0')
-        if (before != body && state.inputLinkRelayActive) {
-            log.warn "provisionBoard(): turning off 'Input Control Relay' and 'Relay Feedback Momentary Input' " +
-                     "so inputs no longer switch relays on the board itself"
-        }
+    // Boards ship with input 1 wired to relay 1, input 2 to relay 2 and so on. This app treats
+    // inputs as contact sensors, so that linkage is simply incompatible with it -- every door event
+    // would click a relay, and the relays could not be used for anything else. There is no sensible
+    // configuration of this app where you would want it left on, so it is not offered as a choice.
+    //
+    // Scope: this governs only inputs driving relays. Relay control via relay_cgi.cgi, the type=2
+    // timed auto-off used for sprinklers, relay_task and everything under relay_connect are
+    // untouched. Both patterns match a key followed by a number, so neither can match the
+    // "input_link_relay" section header, which is followed by an opening brace.
+    String beforeUnlink = body
+    body = body.replaceFirst(/"input_link_relay"\s*:\s*\d+/, '"input_link_relay":0')
+               .replaceFirst(/"relay_feedback_momentary_input"\s*:\s*\d+/, '"relay_feedback_momentary_input":0')
+    if (beforeUnlink != body && state.inputLinkRelayActive) {
+        log.warn "provisionBoard(): turning off 'Input Control Relay' and 'Relay Feedback Momentary Input' " +
+                 "so inputs no longer switch relays on the board itself"
     }
 
     if (writeBoardConfig(body)) {
@@ -951,7 +765,6 @@ private String relayUrl(int relayNumber, boolean turnOn, int autoOffSeconds) {
 }
 
 private createRelayDevices(int relayCount) {
-    if (settings.createRelayDevices == false) return
     for (int i = 1; i <= relayCount; i++) {
         String dni = relayDni(i)
         if (!getChildDevice(dni)) {
@@ -1099,7 +912,7 @@ def poll() {
     // Relays get swept too. Their state can change without us being told -- an auto-off timer
     // expiring, the board's own web page, a physical switch wired to an input -- so the same
     // "eventually correct" guarantee should cover them.
-    if (settings.createRelayDevices != false && (state.relayCount ?: 0) > 0) refreshRelays()
+    if ((state.relayCount ?: 0) > 0) refreshRelays()
 }
 
 def pollHandler(resp, data) {
