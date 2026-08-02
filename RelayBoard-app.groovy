@@ -100,7 +100,7 @@ def mainPage() {
             // the instant they change.  Offered as an enum rather than a free number because each
             // choice maps to one of Hubitat's fixed slot schedulers, which are cheaper and cannot
             // stack up the way a custom cron expression can.
-            input name: "reconcileMinutes", type: "enum", title: "How often to re-sync all inputs as a safety net",
+            input name: "reconcileMinutes", type: "enum", title: "How often to re-sync all inputs and relays as a safety net",
                 options: ["1": "Every minute", "5": "Every 5 minutes", "10": "Every 10 minutes", "15": "Every 15 minutes", "30": "Every 30 minutes"],
                 defaultValue: "5", required: true
             input name: "debugOutput", type: "bool", title: "Enable debug logging", defaultValue: false
@@ -797,14 +797,13 @@ def refreshRelayUrls() {
 /**
  * Send one relay command and confirm it actually happened.
  *
- * The board's reply to the command is itself the confirmation -- it echoes back the resulting state
- * of that relay in about 30ms -- so that is what updates the device. No polling delay, and no extra
- * request in the normal case.
+ * The board's reply is the confirmation -- it echoes back the resulting state of that relay in
+ * about 30ms -- so that is what updates the device, and nothing is scheduled to check up on it
+ * afterwards. One command is one request.
  *
- * A follow up read is still scheduled, but only as a backstop for the command whose reply never
- * arrives or disagrees, and it cancels itself as soon as the reply confirms. Devices are only ever
- * set from what the board reports, never from what we asked for, so a relay that physically failed
- * to switch shows the truth.
+ * If a reply is lost or wrong, the periodic sweep corrects it within the reconcile interval, the
+ * same guarantee the inputs get. Devices are only ever set from what the board reports, never from
+ * what we asked for, so a relay that physically failed to switch shows the truth.
  */
 def relayCommand(aDevice, boolean turnOn) {
     Integer n = relayNumberOf(aDevice)
@@ -821,16 +820,8 @@ def relayCommand(aDevice, boolean turnOn) {
     String url = relayUrl(n, turnOn, turnOn ? autoOff : 0)
     logDebug "relayCommand(): ${url}"
 
-    String want = turnOn ? "on" : "off"
-    Map expected = (state.relayExpected ?: [:])
-    expected[n as String] = want
-    state.relayExpected = expected
-
-    asynchttpGet("relayCommandHandler", [uri: url, timeout: 10], [relay: n, expect: want])
-
-    // Backstop only. The command's own reply normally confirms the state within milliseconds and
-    // cancels this; it exists for the case where that reply is lost or disagrees.
-    runIn(5, "verifyRelaysFinal")
+    asynchttpGet("relayCommandHandler", [uri: url, timeout: 10],
+                 [relay: n, expect: (turnOn ? "on" : "off")])
 
     // A timed ON switches off on its own, so schedule a read a little after the deadline to catch
     // it -- otherwise the device would sit showing "on" until the next sweep.
@@ -850,9 +841,11 @@ def relayCommandHandler(resp, data) {
     Integer relayNum = data?.relay as Integer
     String expect = data?.expect
 
+    // Anything that goes wrong below is logged and left alone -- the periodic sweep will correct
+    // the device state on its next pass, so there is nothing useful to schedule here.
     if (resp?.status != 200) {
         log.warn "relayCommand: board returned HTTP ${resp?.status} for relay ${relayNum}"
-        return      // leave the backstop scheduled to sort it out
+        return
     }
 
     String body = resp.data as String
@@ -868,26 +861,16 @@ def relayCommandHandler(resp, data) {
     getChildDevice(relayDni(relayNum))?.setRelayState(actual)
 
     if (actual != expect) {
-        log.warn "relayCommand: asked relay ${relayNum} to go ${expect}, board reports ${actual}"
-        return
+        log.error "Relay ${relayNum} did not switch ${expect} -- the board reports it is ${actual}. " +
+                  "Check the relay password in the app and that relay ${relayNum} exists on this board."
     }
-
-    // Confirmed. Drop the expectation, and stand the backstop down once nothing is outstanding.
-    Map expected = (state.relayExpected ?: [:])
-    expected.remove(relayNum as String)
-    state.relayExpected = expected
-    if (expected.isEmpty()) unschedule("verifyRelaysFinal")
 }
 
 /** Read every relay's real state from the board. */
-def refreshRelays(Boolean finalCheck = false) {
+def refreshRelays() {
     asynchttpGet("relayStatusHandler",
-                 [uri: "http://${settings.ribAddress}/relay_cgi_load.cgi", timeout: 10],
-                 [finalCheck: (finalCheck == true)])
+                 [uri: "http://${settings.ribAddress}/relay_cgi_load.cgi", timeout: 10])
 }
-
-/** Backstop for a command whose reply never arrived or disagreed. Usually cancelled before it runs. */
-def verifyRelaysFinal() { refreshRelays(true) }
 
 def relayStatusHandler(resp, data) {
     try {
@@ -905,9 +888,6 @@ def relayStatusHandler(resp, data) {
         }
         int count = toInt(keys[offset])
 
-        boolean isFinal = (data?.finalCheck == true)
-        Map expected = (state.relayExpected ?: [:])
-
         for (aDevice in getAllChildDevices()) {
             Integer n = relayNumberOf(aDevice)
             if (n == null || n < 1 || n > count) continue
@@ -915,20 +895,8 @@ def relayStatusHandler(resp, data) {
             int valueIndex = offset + n
             if (valueIndex >= keys.size()) continue
 
-            String actual = (keys[valueIndex] == "1") ? "on" : "off"
-            aDevice.setRelayState(actual)
-
-            String want = expected[n as String]
-            if (want && actual == want) {
-                expected.remove(n as String)          // settled, stop watching it
-            } else if (want && isFinal) {
-                log.error "Relay ${n} (${aDevice}) did not switch ${want}. The board still reports ${actual} " +
-                          "five seconds after the command. Check the relay password and that relay ${n} exists on this board."
-                expected.remove(n as String)
-            }
+            aDevice.setRelayState((keys[valueIndex] == "1") ? "on" : "off")
         }
-
-        state.relayExpected = expected
     } catch (Exception e) {
         log.warn "relay status failed: ${e.message}"
     }
@@ -948,9 +916,11 @@ def poll() {
     logDebug "poll(): $requestParams"
     asynchttpGet("pollHandler", requestParams)
 
-    // Relays get swept too. Their state can change without us being told -- an auto-off timer
-    // expiring, the board's own web page, a physical switch wired to an input -- so the same
-    // "eventually correct" guarantee should cover them.
+    // Relays are swept on the same schedule. Their state can change without anyone telling us -- an
+    // auto-off timer expiring, someone using the board's own web page, a lost command reply -- so
+    // they get the same "eventually correct" guarantee the inputs have. This is also the only thing
+    // that corrects a relay now that commands are confirmed from their own reply rather than by a
+    // follow up read.
     if ((state.relayCount ?: 0) > 0) refreshRelays()
 }
 

@@ -149,18 +149,17 @@ anything that must never be left running — sprinklers, a heater, a pump.
 
 The app never assumes a command worked, but it doesn't poll to find out either. The board's reply to
 a relay command echoes back what it actually did — `&status&type&relay&on&time&` — and it arrives in
-around 30 milliseconds, so that reply is what updates the device. Switching a relay shows up in
-Hubitat essentially instantly.
+around 30 milliseconds, so that reply is what updates the device. One command is one HTTP request,
+and switching a relay shows up in Hubitat essentially instantly. If the board reports a state other
+than the one requested, an error is logged naming the relay.
 
-A follow-up read is scheduled as a backstop for the case where that reply is lost or disagrees, and
-it cancels itself as soon as the reply confirms. If a relay never reaches the requested state, an
-error is logged naming it.
+Relay states are also re-read on the same reconcile sweep as the inputs, on whatever interval you
+picked in the app. That is what catches an auto-off timer expiring, someone switching a relay from
+the board's own web page, or a command reply that went missing.
 
 Devices are only ever set from what the board reports, never from what was requested — so a relay
 that physically failed to switch shows the truth rather than a comforting lie.
 
-Relay states are also refreshed on the same reconcile sweep as the inputs, which is what catches an
-auto-off timer expiring or someone switching a relay from the board's own web page.
 
 ### The URLs, for reference
 
