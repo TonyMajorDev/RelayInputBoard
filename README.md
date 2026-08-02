@@ -147,10 +147,17 @@ anything that must never be left running — sprinklers, a heater, a pump.
 
 ### How relay state is kept accurate
 
-The app never assumes a command worked. After sending one it reads the board's real relay status
-back after 1 second, and again at 5 seconds if it still doesn't match. Devices are always set to
-what the board actually reports, never to what was requested — so a relay that failed to switch
-shows the truth. If it still hasn't changed after 5 seconds, an error is logged naming the relay.
+The app never assumes a command worked, but it doesn't poll to find out either. The board's reply to
+a relay command echoes back what it actually did — `&status&type&relay&on&time&` — and it arrives in
+around 30 milliseconds, so that reply is what updates the device. Switching a relay shows up in
+Hubitat essentially instantly.
+
+A follow-up read is scheduled as a backstop for the case where that reply is lost or disagrees, and
+it cancels itself as soon as the reply confirms. If a relay never reaches the requested state, an
+error is logged naming it.
+
+Devices are only ever set from what the board reports, never from what was requested — so a relay
+that physically failed to switch shows the truth rather than a comforting lie.
 
 Relay states are also refreshed on the same reconcile sweep as the inputs, which is what catches an
 auto-off timer expiring or someone switching a relay from the board's own web page.

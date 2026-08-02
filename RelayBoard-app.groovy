@@ -795,12 +795,16 @@ def refreshRelayUrls() {
 }
 
 /**
- * Send one relay command, then confirm it actually happened.
+ * Send one relay command and confirm it actually happened.
  *
- * We do not assume success: the board is asked for its real relay status a second later, and again
- * at five seconds if it still doesn't match. Devices are always set to whatever the board reports,
- * never to what we hoped for, so a relay that physically failed to switch shows the truth rather
- * than a comforting lie.
+ * The board's reply to the command is itself the confirmation -- it echoes back the resulting state
+ * of that relay in about 30ms -- so that is what updates the device. No polling delay, and no extra
+ * request in the normal case.
+ *
+ * A follow up read is still scheduled, but only as a backstop for the command whose reply never
+ * arrives or disagrees, and it cancels itself as soon as the reply confirms. Devices are only ever
+ * set from what the board reports, never from what we asked for, so a relay that physically failed
+ * to switch shows the truth.
  */
 def relayCommand(aDevice, boolean turnOn) {
     Integer n = relayNumberOf(aDevice)
@@ -817,14 +821,15 @@ def relayCommand(aDevice, boolean turnOn) {
     String url = relayUrl(n, turnOn, turnOn ? autoOff : 0)
     logDebug "relayCommand(): ${url}"
 
+    String want = turnOn ? "on" : "off"
     Map expected = (state.relayExpected ?: [:])
-    expected[n as String] = turnOn ? "on" : "off"
+    expected[n as String] = want
     state.relayExpected = expected
 
-    asynchttpGet("relayCommandHandler", [uri: url, timeout: 10])
+    asynchttpGet("relayCommandHandler", [uri: url, timeout: 10], [relay: n, expect: want])
 
-    // Confirm shortly after, then once more a few seconds later if it hasn't caught up yet.
-    runIn(1, "verifyRelays")
+    // Backstop only. The command's own reply normally confirms the state within milliseconds and
+    // cancels this; it exists for the case where that reply is lost or disagrees.
     runIn(5, "verifyRelaysFinal")
 
     // A timed ON switches off on its own, so schedule a read a little after the deadline to catch
@@ -832,12 +837,46 @@ def relayCommand(aDevice, boolean turnOn) {
     if (turnOn && autoOff > 0) runIn(autoOff + 5, "refreshRelays")
 }
 
+/**
+ * The board's reply to a relay command, which echoes what it actually did:
+ *
+ *     &status&type&relay&on&time&
+ *     &0     &0   &6    &1 &0    &     -> status ok, relay index 6, now on, no timer
+ *
+ * Note this describes the one relay we commanded, not all of them -- relay_cgi_load.cgi is the call
+ * that returns every relay. The relay index here is zero based, matching the request.
+ */
 def relayCommandHandler(resp, data) {
+    Integer relayNum = data?.relay as Integer
+    String expect = data?.expect
+
     if (resp?.status != 200) {
-        log.warn "relayCommand: board returned HTTP ${resp?.status}"
-    } else {
-        logDebug "relayCommandHandler(): ${resp.data}"
+        log.warn "relayCommand: board returned HTTP ${resp?.status} for relay ${relayNum}"
+        return      // leave the backstop scheduled to sort it out
     }
+
+    String body = resp.data as String
+    logDebug "relayCommandHandler(): ${body}"
+
+    List fields = body?.tokenize('&')
+    if (fields == null || fields.size() < 4 || toInt(fields[0]) != 0 || toInt(fields[2]) != relayNum - 1) {
+        log.warn "relayCommand: unexpected reply for relay ${relayNum}: '${body}'"
+        return
+    }
+
+    String actual = (fields[3] == "1") ? "on" : "off"
+    getChildDevice(relayDni(relayNum))?.setRelayState(actual)
+
+    if (actual != expect) {
+        log.warn "relayCommand: asked relay ${relayNum} to go ${expect}, board reports ${actual}"
+        return
+    }
+
+    // Confirmed. Drop the expectation, and stand the backstop down once nothing is outstanding.
+    Map expected = (state.relayExpected ?: [:])
+    expected.remove(relayNum as String)
+    state.relayExpected = expected
+    if (expected.isEmpty()) unschedule("verifyRelaysFinal")
 }
 
 /** Read every relay's real state from the board. */
@@ -847,7 +886,7 @@ def refreshRelays(Boolean finalCheck = false) {
                  [finalCheck: (finalCheck == true)])
 }
 
-def verifyRelays()      { refreshRelays(false) }
+/** Backstop for a command whose reply never arrived or disagreed. Usually cancelled before it runs. */
 def verifyRelaysFinal() { refreshRelays(true) }
 
 def relayStatusHandler(resp, data) {
