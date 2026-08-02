@@ -154,19 +154,10 @@ def mainPage() {
                 input name: "relayPassword", type: "number", title: "Relay password (0 if you have not set one)",
                     defaultValue: 0, required: false
 
-                paragraph "<b>About the auto-off timer.</b> Each relay switch has an optional " +
-                          "\"turn off automatically after N minutes\" setting. When it is on, the ON command asks " +
-                          "the board to start a countdown and switch that relay off by itself once the time is up. " +
-                          "<b>The countdown runs on the relay board, not on Hubitat</b> &mdash; so the relay still " +
-                          "switches off on time even if the hub reboots, this app crashes, your network drops, or " +
-                          "the OFF command never arrives. That makes it the right choice for anything that must " +
-                          "never be left running, such as sprinklers or a heater."
-
-                paragraph "<small>Sending OFF early cancels the countdown normally. Sending ON again restarts it " +
-                          "from the beginning. The one case it does not cover is the board itself losing power " +
-                          "mid-countdown, since the timer lives in the board's memory &mdash; check the board's " +
-                          "\"Power Failure Recovery Relay\" setting if that matters to you. The maximum is 1092 " +
-                          "minutes (about 18 hours).</small>"
+                paragraph "<small>Each relay device has its own optional auto-off timer, set on the device page. " +
+                          "It is worth using for anything that must never be left running, such as sprinklers " +
+                          "&mdash; the countdown runs on the board rather than on the hub. The device page explains " +
+                          "how it behaves.</small>"
             }
         }
         // Setup can fail in a few quiet ways (OAuth off, firmware too old, board unreachable).
@@ -181,6 +172,29 @@ def mainPage() {
             }
             if (state.lastProvisioned) {
                 paragraph "Board push configured: ${state.lastProvisioned}"
+            }
+            // The single most useful number on this page: if it is zero, the board has never once
+            // called the hub, and nothing else here matters yet.
+            if (state.pushCount) {
+                paragraph "Pushes received from the board: <b>${state.pushCount}</b> &mdash; last was ${state.lastPush}"
+            } else {
+                paragraph "<b>No pushes have been received from the board yet.</b> Until this changes, inputs are " +
+                          "only being updated by the reconcile sweep."
+            }
+            // Show the endpoint so it can be tested by hand, or pasted into the board's own
+            // "Input Link URL" page if automatic provisioning will not work on your firmware.
+            if (state.accessToken) {
+                Map hub = hubEndpointParts()
+                if (hub) {
+                    paragraph "<small><b>Push endpoint.</b> The board is told to call these. Input 1 as an example " +
+                              "&mdash; the number before the last slash is the input, and the last digit is 1 for " +
+                              "open and 0 for closed:<br>" +
+                              "Server <code>${hub.host}</code> port <code>${hub.port}</code><br>" +
+                              "ON path <code>${pushPath(hub.basePath, 1, 1)}</code><br>" +
+                              "OFF path <code>${pushPath(hub.basePath, 1, 0)}</code><br>" +
+                              "You can test it in a browser: <code>http://${hub.host}:${hub.port}${pushPath(hub.basePath, 1, 1)}</code> " +
+                              "should flip RIB Input 1 to open.</small>"
+                }
             }
         }
 
@@ -201,9 +215,12 @@ def mainPage() {
                 paragraph "Board firmware version unknown &mdash; the board has not answered yet."
             }
 
-            paragraph "Event driven mode needs firmware <b>${MIN_FIRMWARE_TEXT}</b> or later. " +
-                      "<b>${REC_FIRMWARE_TEXT}</b> is recommended, since later releases fixed real bugs in this " +
-                      "exact feature and the release immediately before it is known to crash."
+            paragraph "Event driven mode needs firmware <b>${MIN_FIRMWARE_TEXT}</b> or later, and that is the only " +
+                      "hard requirement. Later releases did fix bugs in this feature, but they cover HTTPS and " +
+                      "POST bodies, neither of which this app uses &mdash; so if you are above the minimum you " +
+                      "probably do not need to upgrade for this at all. If you upgrade for other reasons, " +
+                      "<b>${REC_FIRMWARE_TEXT}</b> is the one to land on, since the release just before it is " +
+                      "known to crash."
 
             paragraph "Downloads: <a href='${FIRMWARE_PAGE}' target='_blank'>Dingtian support &rarr; Download</a> " +
                       "(or straight to the <a href='${FIRMWARE_ZIP}' target='_blank'>relay upgrade tool</a>). " +
@@ -565,9 +582,16 @@ def handleInputEvent() {
     String idx = params?.idx
     String val = params?.val
 
-    logDebug "handleInputEvent(): input ${idx} = ${val}"
-
     def dev = getChildDevice(contactDni(idx))
+
+    // Logged at info, not debug, and always. A push arriving is the thing this whole app exists to
+    // do, it only happens when something physically changed, and "did the board actually call us?"
+    // is the first question worth answering when anything looks wrong.
+    log.info "PUSH from board: input ${idx} = ${val}${dev ? " (${dev})" : ""}"
+
+    state.pushCount = (state.pushCount ?: 0) + 1
+    state.lastPush = "input ${idx} = ${val} at ${new Date().format("yyyy-MM-dd HH:mm:ss", location.timeZone)}"
+
     if (dev) {
         if (val == "1") dev.isOpen() else dev.isClosed()
     } else {

@@ -39,12 +39,23 @@ metadata {
     preferences {
         input name: "useAutoOff", type: "bool",
             title: "Use the board's built-in auto-off timer",
-            description: "Recommended for anything that must never be left running, such as sprinklers.",
+            description: "When this is on, turning the relay ON also asks the board to start a countdown and " +
+                         "switch itself back off when the time is up. " +
+                         "<b>The countdown runs on the relay board, not on Hubitat</b>, so the relay still switches " +
+                         "off on schedule even if the hub reboots, this app stops working, the network drops, or the " +
+                         "OFF command is never sent. A timer running on the hub would fail in exactly those " +
+                         "situations. Use this for anything that must never be left running &mdash; sprinklers, a " +
+                         "heater, a pump.",
             defaultValue: false
 
         input name: "autoOffMinutes", type: "number",
             title: "Turn off automatically after (minutes)",
-            description: "1 to 1092 minutes (about 18 hours).",
+            description: "1 to 1092 minutes (about 18 hours &mdash; the board stores this in a 16-bit field). " +
+                         "Turning the relay OFF yourself cancels the countdown normally, and turning it ON again " +
+                         "restarts the countdown from the beginning. The one case this does not protect against is " +
+                         "the board losing power part way through, because the countdown lives in the board's " +
+                         "memory &mdash; if that matters for this circuit, check the board's " +
+                         "\"Power Failure Recovery Relay\" setting.",
             defaultValue: 30, range: "1..1092"
 
         input name: "txtEnable", type: "bool", title: "Enable descriptive text logging", defaultValue: true
