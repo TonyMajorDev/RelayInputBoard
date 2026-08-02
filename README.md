@@ -69,6 +69,14 @@ Use `ota_tool_v4_1_1.exe` from Dingtian's upgrade tool. Turn off your PC firewal
 - **The app reports the board didn't store the push URL intact.** The URL the hub needs is about 70 characters and some firmware may truncate it. This is worth reporting — note your `sw_ver` and the length the app says it got back.
 - **Nothing works after a board factory reset.** Open the app and click Done to re-provision it.
 
+## If you run more than one board
+
+It's common to have a second Dingtian board doing something unrelated — sprinklers, low voltage
+lighting — with nothing wired to its inputs. **Point this app only at the board your contact sensors
+are actually wired to.** The app's settings page shows the model it found (e.g. `Dingtian DT-R008`)
+next to the firmware version, so you can confirm you're talking to the right one before clicking
+Done. A board used purely for outputs needs nothing from this app and should be left alone.
+
 ## Controlling Relays from Hubitat
 
 Also, for the Relays, this App does not yet handle that, but it will.  For now, I create a new device for each relay used with this Hubitat device driver:  https://github.com/hubitat/HubitatPublic/blob/master/examples/drivers/httpGetSwitch.groovy

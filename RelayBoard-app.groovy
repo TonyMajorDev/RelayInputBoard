@@ -93,7 +93,10 @@ mappings {
 def mainPage() {
     dynamicPage(name: "mainPage") {
         section("Relay Input Board Configuration") {
-            input name: "ribAddress", type: "text", title: "Relay Interface Board Address", submitOnChange: true, required: true, defaultValue: "192.168.50.101" // local name resolution does not work on hubitat hub "homerelays.local"
+            // This must be the board your INPUTS are wired to. If you run more than one Dingtian
+            // board, check the model shown under "Board Firmware" below to confirm you have the
+            // right one before clicking Done.
+            input name: "ribAddress", type: "text", title: "Relay Interface Board Address", submitOnChange: true, required: true, defaultValue: "192.168.50.100" // local name resolution does not work on hubitat hub "homerelays.local"
             href name: "toDiscovery", page: "discoveryPage", title: "Search the network for relay boards",
                  description: "Optional. You can always just type the IP address above."
             // This is the safety net sweep, not the primary update path -- inputs normally update
