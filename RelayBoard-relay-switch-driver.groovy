@@ -58,7 +58,10 @@ metadata {
                          "\"Power Failure Recovery Relay\" setting.",
             defaultValue: 30, range: "1..1092"
 
-        input name: "txtEnable", type: "bool", title: "Enable descriptive text logging", defaultValue: true
+        input name: "txtEnable", type: "bool",
+            title: "Log a line whenever this relay switches",
+            description: "Turn this off for a relay that switches often and would otherwise fill the log.",
+            defaultValue: true
     }
 }
 
@@ -70,8 +73,19 @@ def updated() {
     // The timer setting is part of the ON url, so the displayed URLs have to be rebuilt whenever
     // the user changes it.
     parent?.refreshRelayUrls()
-    if (txtEnable) log.info "${device}: auto-off ${autoOffSeconds() ? "after ${settings.autoOffMinutes} minute(s)" : "disabled"}"
+    if (logText()) log.info "${device}: auto-off ${autoOffSeconds() ? "after ${settings.autoOffMinutes} minute(s)" : "disabled"}"
     refresh()
+}
+
+/**
+ * Whether to log state changes.
+ *
+ * Hubitat only applies a preference's defaultValue once the device's preferences have been saved,
+ * so an untouched device reads null here.  Treat that as the declared default of true, otherwise
+ * the setting would say "on" while behaving as "off" until someone happened to press Save.
+ */
+private boolean logText() {
+    return (settings.txtEnable == null) ? true : (settings.txtEnable as Boolean)
 }
 
 def on() {
@@ -102,7 +116,7 @@ Integer autoOffSeconds() {
 def setRelayState(String value) {
     if (device.currentValue("switch") != value) {
         sendEvent(name: "switch", value: value, descriptionText: "${device} is ${value}")
-        if (txtEnable) log.info "${device} is ${value}"
+        if (logText()) log.info "${device} is ${value}"
     }
 }
 
