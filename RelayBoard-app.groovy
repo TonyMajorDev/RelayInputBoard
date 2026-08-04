@@ -533,12 +533,22 @@ def handleInputEvent() {
     state.pushCount = (state.pushCount ?: 0) + 1
     state.lastPush = "input ${idx} = ${val} at ${new Date().format("yyyy-MM-dd HH:mm:ss", location.timeZone)}"
 
-    if (dev) {
-        if (val == "1") dev.isOpen() else dev.isClosed()
-    } else {
+    if (!dev) {
         // Usually means the user deleted that input's device but the board is still configured for it.
         log.warn "handleInputEvent(): no child device for input ${idx}"
+        return render(contentType: "text/plain", data: "OK", status: 200)
     }
+
+    // A disabled device cannot raise events, so there is nothing to do with this. Not a warning --
+    // disabling a device is a deliberate act, and the board stops sending on the next Done anyway.
+    try {
+        if (dev.isDisabled()) {
+            logDebug "handleInputEvent(): ${dev} is disabled, ignoring"
+            return render(contentType: "text/plain", data: "OK", status: 200)
+        }
+    } catch (Exception ignored) { }
+
+    if (val == "1") dev.isOpen() else dev.isClosed()
 
     // Answer immediately and cheaply -- the board is holding the socket open waiting on us, and
     // anything slow here shows up as latency on the next input change.
@@ -762,13 +772,13 @@ private String replaceJsonValue(String obj, String key, String newValue) {
  * Returns null only if the fields the feature is actually made of are absent, which means the
  * firmware is too old for it.
  */
-private String applyPushSettings(String block, int n, String hubHost, int hubPort, String basePath) {
+private String applyPushSettings(String block, int n, String hubHost, int hubPort, String basePath, boolean enable = true) {
     Closure quote = { v -> '"' + v.toString().replace('\\', '\\\\').replace('"', '\\"') + '"' }
     Closure array = { List values -> '[' + values.join(',') + ']' }
     List inputs = (1..n)
 
     Map wanted = [
-        "en"          : "1",
+        "en"          : (enable ? "1" : "0"),
         "cnt"         : "${n}".toString(),
         // 0 = SelfLock: follow the input level rather than pulsing on one edge only.
         "type"        : array(inputs.collect { 0 }),
@@ -896,9 +906,16 @@ private provisionBoard(String raw, int inputCount) {
 
     int n = inputCount
 
+    // If every input device has been disabled or deleted, tell the board to stop pushing rather
+    // than leaving it calling the hub about inputs nobody is listening to. This mirrors the sweep,
+    // which already skips inputs in that case -- it would be odd to stop reading them but carry on
+    // being told about them.
+    boolean wantPush = hasActiveInputs()
+    state.pushDisabledNoInputs = !wantPush
+
     // Edit the board's own block and splice it back, leaving every other byte of its config exactly
     // as it sent it. Rebuilding the whole document from a parsed map is what broke this before.
-    String block = applyPushSettings(raw.substring(bounds[0], bounds[1]), n, hub.host, hub.port, hub.basePath)
+    String block = applyPushSettings(raw.substring(bounds[0], bounds[1]), n, hub.host, hub.port, hub.basePath, wantPush)
     if (block == null) {
         state.provisionError = "This board's Input Link URL settings are not in a shape this app understands, " +
                                "so push could not be set up. Firmware ${state.boardVersion}."
@@ -933,6 +950,10 @@ private provisionBoard(String raw, int inputCount) {
     logDebug "provisionBoard(): board's input_link_url key order: ${jsonKeyOrder(raw.substring(bounds[0], bounds[1]))}"
 
     if (writeBoardConfig(body)) {
+        if (!wantPush) {
+            log.info "All input devices for ${settings.ribAddress} are disabled or deleted, so the board has been " +
+                     "told to stop sending input events. Re-enable one and click Done to turn it back on."
+        }
         state.lastProvisioned = new Date().format("yyyy-MM-dd HH:mm:ss", location.timeZone)
         logDebug "provisionBoard(): wrote Input Link URL config for ${n} inputs"
         runIn(5, "verifyProvisioning")     // give the board a moment to commit before reading back
@@ -975,6 +996,9 @@ private Map hubEndpointParts() {
  * network problem rather than a failed write.
  */
 def verifyProvisioning() {
+    // Push is deliberately off when nothing is listening, so there is nothing to verify.
+    if (state.pushDisabledNoInputs) return
+
     Map cfg = fetchBoardConfig()
     if (!cfg?.input_link_url) return
 
