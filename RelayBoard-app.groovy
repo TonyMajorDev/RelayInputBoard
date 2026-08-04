@@ -670,6 +670,47 @@ private int jsonValueEnd(String s, int from) {
     return i
 }
 
+/**
+ * The keys of a JSON object, in the order the board wrote them.
+ *
+ * Purely diagnostic. The app never needs to know this order -- it edits values where they already
+ * are -- but the order does differ between firmware and is documented nowhere, so having it in the
+ * log turns "why did the write fail on this board" into a single glance.
+ */
+private List jsonKeyOrder(String obj) {
+    List keys = []
+    int i = obj.indexOf('{')
+    if (i < 0) return keys
+    i++
+    int depth = 1
+    boolean expectKey = true
+    int n = obj.length()
+    while (i < n && depth > 0) {
+        char c = obj.charAt(i)
+        if (c == '"') {
+            int end = jsonStringEnd(obj, i)
+            if (end < 0) break
+            if (depth == 1 && expectKey) {
+                keys << obj.substring(i + 1, end - 1)
+                expectKey = false
+                int v = obj.indexOf(':', end)
+                if (v < 0) break
+                int after = jsonValueEnd(obj, v + 1)
+                if (after < 0) break
+                i = after
+                continue
+            }
+            i = end
+            continue
+        }
+        if (c == '{' || c == '[') depth++
+        else if (c == '}' || c == ']') depth--
+        else if (c == ',' && depth == 1) expectKey = true
+        i++
+    }
+    return keys
+}
+
 /** Index just past the JSON string whose opening quote is at i. */
 private int jsonStringEnd(String s, int i) {
     int n = s.length()
@@ -886,6 +927,11 @@ private provisionBoard(String raw, int inputCount) {
                  "so inputs no longer switch relays on the board itself"
     }
 
+    // Record the board's own key order. It is not the same on every firmware -- 4685 and 6611
+    // differ -- and it is not documented anywhere, so if a future release rearranges it again this
+    // is the line that says so instead of leaving another round of guesswork.
+    logDebug "provisionBoard(): board's input_link_url key order: ${jsonKeyOrder(raw.substring(bounds[0], bounds[1]))}"
+
     if (writeBoardConfig(body)) {
         state.lastProvisioned = new Date().format("yyyy-MM-dd HH:mm:ss", location.timeZone)
         logDebug "provisionBoard(): wrote Input Link URL config for ${n} inputs"
@@ -893,6 +939,9 @@ private provisionBoard(String raw, int inputCount) {
     } else {
         state.provisionError = "Failed to write the push configuration to the board at ${settings.ribAddress}"
         log.error "provisionBoard(): ${state.provisionError}"
+        // The two things needed to work out why, without having to ask for them afterwards.
+        log.error "provisionBoard(): firmware ${state.boardVersion}, board's input_link_url key order was " +
+                  "${jsonKeyOrder(raw.substring(bounds[0], bounds[1]))}"
     }
 }
 
