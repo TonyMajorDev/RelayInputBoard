@@ -284,11 +284,9 @@ def uninstalled() {
     try {
         String raw = fetchBoardConfigRawAt(settings.ribAddress)
         List bounds = inputLinkUrlBounds(raw)
-        if (bounds) {
-            String block = raw.substring(bounds[0], bounds[1]).replaceFirst(/"en"\s*:\s*\d+/, '"en":0')
-            if (writeBoardConfig(raw.substring(0, bounds[0]) + block + raw.substring(bounds[1]))) {
-                log.debug "uninstalled(): disabled Input Link URL on the board"
-            }
+        String block = bounds ? replaceJsonValue(raw.substring(bounds[0], bounds[1]), "en", "0") : null
+        if (block && writeBoardConfig(raw.substring(0, bounds[0]) + block + raw.substring(bounds[1]))) {
+            log.debug "uninstalled(): disabled Input Link URL on the board"
         }
     } catch (Exception e) {
         log.warn "uninstalled(): could not disable Input Link URL: ${e.message}"
@@ -621,45 +619,149 @@ private List inputLinkUrlBounds(String raw) {
     if (!raw) return null
     int key = raw.indexOf('"input_link_url"')
     if (key < 0) return null
-    int open = raw.indexOf('{', key)
-    if (open < 0) return null
-    int close = raw.indexOf('}', open)
-    if (close < 0) return null
-    return [key, close + 1]
+    int colon = raw.indexOf(':', key)
+    if (colon < 0) return null
+    int end = jsonValueEnd(raw, colon + 1)
+    if (end < 0) return null
+    int open = raw.indexOf('{', colon)
+    if (open < 0 || open > end) return null
+    return [open, end]
 }
 
 /**
- * Build the replacement "input_link_url" block as text, in the key order the board itself uses.
+ * Index just past the JSON value that starts at or after i.
  *
- * Written by hand rather than serialised from a map so the key order, number formatting and array
- * lengths are all under our control and cannot be quietly rearranged by a JSON library. The SDK is
- * explicit that node order must not change.
+ * Counts brackets properly and skips over strings, so a value containing nested objects, nested
+ * arrays, or braces inside a quoted string is measured correctly. The earlier version assumed the
+ * first closing brace ended the object, which happens to hold for every firmware seen so far but is
+ * exactly the kind of assumption a firmware update is entitled to break -- and a stored URL
+ * containing a brace would break it today.
  */
-private String buildInputLinkUrlBlock(int n, String hubHost, int hubPort, String basePath) {
+private int jsonValueEnd(String s, int from) {
+    int n = s.length()
+    int i = from
+    while (i < n && Character.isWhitespace(s.charAt(i))) i++
+    if (i >= n) return -1
+
+    char c = s.charAt(i)
+    if (c == '"') return jsonStringEnd(s, i)
+
+    if (c == '{' || c == '[') {
+        char open = c
+        char close = (c == '{') ? ('}' as char) : (']' as char)
+        int depth = 0
+        while (i < n) {
+            char d = s.charAt(i)
+            if (d == '"') {
+                int se = jsonStringEnd(s, i)
+                if (se < 0) return -1
+                i = se
+                continue
+            }
+            if (d == open) depth++
+            else if (d == close && --depth == 0) return i + 1
+            i++
+        }
+        return -1
+    }
+
+    // number, true, false or null: runs until the next separator
+    while (i < n && s.charAt(i) != ',' && s.charAt(i) != '}' && s.charAt(i) != ']') i++
+    return i
+}
+
+/** Index just past the JSON string whose opening quote is at i. */
+private int jsonStringEnd(String s, int i) {
+    int n = s.length()
+    i++
+    while (i < n) {
+        char c = s.charAt(i)
+        if (c == '\\') { i += 2; continue }
+        if (c == '"') return i + 1
+        i++
+    }
+    return -1
+}
+
+/**
+ * Replace the value of one key inside a JSON object's text, leaving the rest of it byte for byte.
+ *
+ * This is what lets the app set the handful of fields it cares about without having to know, or
+ * preserve, everything else the firmware keeps in that block. Returns null if the key isn't there.
+ */
+private String replaceJsonValue(String obj, String key, String newValue) {
+    int k = obj.indexOf('"' + key + '"')
+    if (k < 0) return null
+    int colon = obj.indexOf(':', k + key.length() + 2)
+    if (colon < 0) return null
+    int start = colon + 1
+    int end = jsonValueEnd(obj, start)
+    if (end < 0) return null
+    return obj.substring(0, start) + newValue + obj.substring(end)
+}
+
+/**
+ * Set the push settings inside the board's existing "input_link_url" object, one field at a time.
+ *
+ * Deliberately edits rather than rebuilds, and that is not a stylistic preference -- rebuilding is
+ * what broke this. The SDK says plainly that "the node order can't change", and the order is NOT
+ * the same across firmware:
+ *
+ *   V3.1.4685: ... tls, auth, server, port, user, pass, on_method, on_path, on_body, off_method ...
+ *   V3.1.6611: ... tls, auth, port, on_method, off_method, server, user, pass, on_path, off_path ...
+ *
+ * A block written out in any fixed order therefore works on one firmware and is rejected by
+ * another. Editing values in place keeps whatever order the board itself used, so this works on
+ * every version without knowing which one it is talking to.
+ *
+ * The same property handles fields appearing and disappearing over time: anything the app does not
+ * recognise is left untouched, and a field it expects but does not find is simply skipped (HTTP
+ * auth, for example, only arrived in V3.1.3044).
+ *
+ * Returns null only if the fields the feature is actually made of are absent, which means the
+ * firmware is too old for it.
+ */
+private String applyPushSettings(String block, int n, String hubHost, int hubPort, String basePath) {
     Closure quote = { v -> '"' + v.toString().replace('\\', '\\\\').replace('"', '\\"') + '"' }
     Closure array = { List values -> '[' + values.join(',') + ']' }
     List inputs = (1..n)
 
-    return '"input_link_url":{' +
-        '"en":1,' +
-        '"cnt":' + n + ',' +
+    Map wanted = [
+        "en"          : "1",
+        "cnt"         : "${n}".toString(),
         // 0 = SelfLock: follow the input level rather than pulsing on one edge only.
-        '"type":'         + array(inputs.collect { 0 }) + ',' +
+        "type"        : array(inputs.collect { 0 }),
         // 1 = HIGH, so the ON url means the same thing as a "1" from input.cgi.
-        '"active_level":' + array(inputs.collect { 1 }) + ',' +
-        '"tls":'          + array(inputs.collect { 0 }) + ',' +
-        '"auth":'         + array(inputs.collect { 0 }) + ',' +
-        '"server":'       + array(inputs.collect { quote(hubHost) }) + ',' +
-        '"port":'         + array(inputs.collect { hubPort }) + ',' +
-        '"user":'         + array(inputs.collect { '""' }) + ',' +
-        '"pass":'         + array(inputs.collect { '""' }) + ',' +
-        '"on_method":'    + array(inputs.collect { 0 }) + ',' +      // 0 = GET
-        '"on_path":'      + array(inputs.collect { i -> quote(pushPath(basePath, i, 1)) }) + ',' +
-        '"on_body":'      + array(inputs.collect { '""' }) + ',' +
-        '"off_method":'   + array(inputs.collect { 0 }) + ',' +
-        '"off_path":'     + array(inputs.collect { i -> quote(pushPath(basePath, i, 0)) }) + ',' +
-        '"off_body":'     + array(inputs.collect { '""' }) +
-        '}'
+        "active_level": array(inputs.collect { 1 }),
+        "tls"         : array(inputs.collect { 0 }),
+        "auth"        : array(inputs.collect { 0 }),
+        "server"      : array(inputs.collect { quote(hubHost) }),
+        "port"        : array(inputs.collect { hubPort }),
+        "user"        : array(inputs.collect { '""' }),
+        "pass"        : array(inputs.collect { '""' }),
+        "on_method"   : array(inputs.collect { 0 }),          // 0 = GET
+        "on_path"     : array(inputs.collect { i -> quote(pushPath(basePath, i, 1)) }),
+        "on_body"     : array(inputs.collect { '""' }),
+        "off_method"  : array(inputs.collect { 0 }),
+        "off_path"    : array(inputs.collect { i -> quote(pushPath(basePath, i, 0)) }),
+        "off_body"    : array(inputs.collect { '""' })
+    ]
+
+    String result = block
+    List missing = []
+    wanted.each { key, value ->
+        String updated = replaceJsonValue(result, key, value)
+        if (updated == null) missing << key
+        else result = updated
+    }
+
+    if (missing) {
+        // en/cnt/server/on_path are the feature itself; without them there is nothing to configure.
+        log.warn "provisionBoard(): the board's input_link_url has no ${missing.join(', ')} field(s)"
+        if (missing.intersect(["en", "cnt", "server", "on_path", "off_path"])) return null
+    }
+
+    return result
 }
 
 /**
@@ -753,11 +855,17 @@ private provisionBoard(String raw, int inputCount) {
 
     int n = inputCount
 
-    // Splice our block in place of the board's, leaving every other byte of its config exactly as
-    // it sent it. Rebuilding the whole document from a parsed map is what broke this before.
-    String body = raw.substring(0, bounds[0]) +
-                  buildInputLinkUrlBlock(n, hub.host, hub.port, hub.basePath) +
-                  raw.substring(bounds[1])
+    // Edit the board's own block and splice it back, leaving every other byte of its config exactly
+    // as it sent it. Rebuilding the whole document from a parsed map is what broke this before.
+    String block = applyPushSettings(raw.substring(bounds[0], bounds[1]), n, hub.host, hub.port, hub.basePath)
+    if (block == null) {
+        state.provisionError = "This board's Input Link URL settings are not in a shape this app understands, " +
+                               "so push could not be set up. Firmware ${state.boardVersion}."
+        log.error "provisionBoard(): ${state.provisionError}"
+        return
+    }
+
+    String body = raw.substring(0, bounds[0]) + block + raw.substring(bounds[1])
 
     // Always stop the board switching its own relays from its own inputs.
     //
